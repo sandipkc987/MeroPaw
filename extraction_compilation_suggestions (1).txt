@@ -1,0 +1,330 @@
+Kasper Petify – Proposed Fixes (Concrete Code + Rationale)
+==========================================================
+
+This document contains **actionable changes** you can paste into
+`supabase/functions/parse-clinical-summary/index.ts` to fix:
+
+- HR/RR extracting wrong values (e.g., 10 and 3)
+- Missing clinic / doctor / visit date on CityVet PDFs
+
+It also includes **what changed and why**.
+
+--------------------------------------------------------------------
+1) Root cause summary (why it fails today)
+--------------------------------------------------------------------
+A) HR/RR wrong:
+- Your extractor/regex likely captures *any nearby number* after seeing "HR"/"RR" OR matches
+  numbers elsewhere in the document (e.g., "Record Date 11-10-2025" -> "10", vaccine intervals -> "3").
+- `pickBest()` then selects these “valid-looking” small integers because nothing penalizes implausible vitals.
+
+B) Clinic missing:
+- Your clinic regex requires suffix words like CLINIC/HOSPITAL/VETERINARY.
+  CityVet uses the clinic line “CITYVET - LAS COLINAS” which does not include those suffix words.
+
+C) Doctor / date missing or wrong:
+- Doctor is best anchored to labels like “ATTENDING VET(S)”.
+- Date is best anchored to “RECORD DATE”.
+- If your patterns are too general, they miss these exact label variants or pick printed timestamps.
+
+--------------------------------------------------------------------
+2) The solution in one sentence
+--------------------------------------------------------------------
+**Extract metadata from a dedicated HEADER block first, extract vitals from a strict HEALTH STATUS
+section, and add hard plausibility validation so wrong candidates can’t win.**
+
+--------------------------------------------------------------------
+3) Concrete code you can add (copy/paste)
+--------------------------------------------------------------------
+
+3.1 Normalize + helper utilities
+--------------------------------
+Add these helpers near your normalizeText()/pickBest() utilities:
+
+```ts
+function extractHeaderBlock(text: string): string {
+  // Prefer everything before CLINICAL SUMMARY; otherwise take the first chunk.
+  const m = text.match(/^[\s\S]*?\bCLINICAL\s+SUMMARY\b/);
+  return (m ? m[0] : text.slice(0, 1800)).trim();
+}
+
+function extractHealthStatusSection(text: string): string | null {
+  const m = text.match(
+    /\bHEALTH\s+STATUS\b([\s\S]*?)(\bPRESENTING\s+PROBLEM\b|\bPHYSICAL\s+EXAMINATION\b|\bHISTORY\b|$)/
+  );
+  return m ? m[1].trim() : null;
+}
+
+// Fix split digits like "1 40" -> "140" produced by OCR/pdf text extraction
+function joinSplitDigits(s: string) {
+  return s
+    .replace(/\b(\d)\s+(\d{2})\b/g, "$1$2")
+    .replace(/\b(\d{2})\s+(\d)\b/g, "$1$2");
+}
+
+function toInt(s: string): number | null {
+  const n = Number(String(s).replace(/[^\d]/g, ""));
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+function isPlausibleHeartRate(n: number) {
+  return n >= 40 && n <= 240;
+}
+
+function isPlausibleRespRate(n: number) {
+  return n >= 5 && n <= 100;
+}
+
+function isPlausibleWeightLb(n: number) {
+  return n >= 0.5 && n <= 250;
+}
+
+type Candidate = { value: string; confidence: number; reason?: string; source?: string };
+
+function pickBestStrict(cands: Candidate[]): Candidate | null {
+  const filtered = cands
+    .filter(c => c && c.value != null && String(c.value).trim().length > 0)
+    .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+  return filtered[0] ?? null;
+}
+```
+
+3.2 Visit date extraction (Record Date first)
+---------------------------------------------
+```ts
+function extractVisitDate(text: string, sourceLabel: string): Candidate[] {
+  const out: Candidate[] = [];
+  const DATE = "(\\d{1,2}[\\/\\-]\\d{1,2}[\\/\\-]\\d{2,4})";
+
+  const patterns: Array<[RegExp, number, string]> = [
+    [new RegExp(`\\bRECORD\\s+DATE\\b\\s*[:\\-]?\\s*${DATE}`, "g"), 80, "record date"],
+    [new RegExp(`\\b(?:VISIT|APPT|APPOINTMENT)\\s+DATE\\b\\s*[:\\-]?\\s*${DATE}`, "g"), 60, "visit/appt date"],
+    [new RegExp(`\\bPRINTED\\s+AT\\b\\s*[:\\-]?\\s*${DATE}`, "g"), 10, "printed at (weak)"],
+  ];
+
+  for (const [re, base, why] of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      out.push({ value: m[1], confidence: base, reason: why, source: sourceLabel });
+    }
+  }
+  return out;
+}
+```
+
+3.3 Doctor extraction (anchor to Attending Vet(s))
+--------------------------------------------------
+```ts
+function cleanDoctorName(raw: string): string {
+  return raw
+    .replace(/^DR\.?\s*/i, "")
+    .replace(/\bDVM\b/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function looksLikeBadName(name: string): boolean {
+  const bad = ["GAVE","PRESCRIBED","PRINTED","VACCINE","MEDICATION","THERAPEUTIC","PROCEDURE"];
+  const tokens = name.toUpperCase().split(/\s+/);
+  return tokens.some(t => bad.includes(t));
+}
+
+function extractDoctor(text: string, sourceLabel: string): Candidate[] {
+  const out: Candidate[] = [];
+  const patterns: Array<[RegExp, number, string]> = [
+    [/\bATTENDING\s+VET\(S\)\b\s*[:\-]?\s*(DR\.?\s*[A-Z][A-Z]+(?:\s+[A-Z][A-Z]+){0,2})\b/g, 80, "attending vet(s)"],
+    [/\bPRESCRIBED\s+BY\b\s*[:\-]?\s*(DR\.?\s*[A-Z][A-Z]+(?:\s+[A-Z][A-Z]+){0,2})\b/g, 60, "prescribed by"],
+    [/\bPRINTED\s+BY\b\s*[:\-]?\s*(DR\.?\s*[A-Z][A-Z]+(?:\s+[A-Z][A-Z]+){0,2})\b/g, 20, "printed by (weak)"],
+  ];
+
+  for (const [re, base, why] of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const cleaned = cleanDoctorName(m[1]);
+      if (!cleaned || looksLikeBadName(cleaned)) continue;
+      out.push({ value: cleaned, confidence: base, reason: why, source: sourceLabel });
+    }
+  }
+  return out;
+}
+```
+
+3.4 Clinic extraction (support “CITYVET - LAS COLINAS”)
+-------------------------------------------------------
+```ts
+function guessClinicFromHeader(header: string): Candidate[] {
+  const out: Candidate[] = [];
+  const lines = header.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+
+  for (const line of lines.slice(0, 10)) {
+    if (/CLINICAL\s+SUMMARY/i.test(line)) break;
+    if (/\b(Ph|Fax|Email)\b\s*[:\(]/i.test(line)) continue;
+    if (/\bSUITE\b|\bFWY\b|\bST\b|\bAVE\b|\bRD\b|\bTX\b|\b\d{5}\b/i.test(line)) continue;
+    if (line.length >= 3 && line.length <= 60) {
+      out.push({ value: line, confidence: 80, reason: "header first-line clinic heuristic", source: "header" });
+      break;
+    }
+  }
+  return out;
+}
+
+function extractClinic(text: string, sourceLabel: string): Candidate[] {
+  const out: Candidate[] = [];
+
+  // Classic suffix-based clinics (keep your existing one if you have it)
+  const classic = /\b([A-Z0-9& ]{3,40})\s*(CLINIC|HOSPITAL|VETERINARY|ANIMAL HOSPITAL|ANIMAL CLINIC)\b/g;
+
+  // Brand-style lines like "CITYVET - LAS COLINAS"
+  const brand = /\b(CITYVET\s*[-–—]\s*[A-Z][A-Z ]{2,40})\b/g;
+
+  for (const [re, base, why] of [
+    [brand, 60, "brand clinic (CITYVET - X)"],
+    [classic, 60, "classic clinic suffix"],
+  ] as Array<[RegExp, number, string]>) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      out.push({ value: m[1].trim(), confidence: base, reason: why, source: sourceLabel });
+    }
+  }
+  return out;
+}
+```
+
+3.5 HR/RR extraction (label-anchored + plausibility gate)
+---------------------------------------------------------
+```ts
+function extractHeartRate(text: string, sourceLabel: string, inSection: boolean): Candidate[] {
+  const t = joinSplitDigits(text);
+  const out: Candidate[] = [];
+
+  const patterns = [
+    /\bH(?:\.|\s)*R(?:\.|\s)*[:\-]?\s*(\d{2,3})\b/g,
+    /\bHEART\s*RATE\b[:\-]?\s*(\d{2,3})\b/g,
+  ];
+
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(t)) !== null) {
+      const n = toInt(m[1]);
+      if (n == null || !isPlausibleHeartRate(n)) continue;
+      out.push({
+        value: String(n),
+        confidence: (inSection ? 90 : 40),
+        reason: inSection ? "HR in Health Status section" : "HR label match",
+        source: sourceLabel,
+      });
+    }
+  }
+  return out;
+}
+
+function extractRespiratoryRate(text: string, sourceLabel: string, inSection: boolean): Candidate[] {
+  const t = joinSplitDigits(text);
+  const out: Candidate[] = [];
+
+  const patterns = [
+    /\bR(?:\.|\s)*R(?:\.|\s)*[:\-]?\s*(\d{1,2})\b/g,
+    /\bRESP(?:IRATORY)?\s*RATE\b[:\-]?\s*(\d{1,2})\b/g,
+  ];
+
+  for (const re of patterns) {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(t)) !== null) {
+      const n = toInt(m[1]);
+      if (n == null || !isPlausibleRespRate(n)) continue;
+      out.push({
+        value: String(n),
+        confidence: (inSection ? 90 : 40),
+        reason: inSection ? "RR in Health Status section" : "RR label match",
+        source: sourceLabel,
+      });
+    }
+  }
+  return out;
+}
+```
+
+3.6 Where to call these (wiring in your existing flow)
+------------------------------------------------------
+In your main handler after you build `normalized` and `sectionText`:
+
+```ts
+const normalizedAll = normalizeText(rawText);
+const header = extractHeaderBlock(normalizedAll);
+const healthSection = extractHealthStatusSection(normalizedAll);
+
+const visitDate = pickBestStrict([
+  ...extractVisitDate(header, "header"),
+  ...extractVisitDate(normalizedAll, "fulltext"),
+]);
+
+const doctorName = pickBestStrict([
+  ...extractDoctor(header, "header"),
+  ...extractDoctor(normalizedAll, "fulltext"),
+]);
+
+const clinicName = pickBestStrict([
+  ...guessClinicFromHeader(header),
+  ...extractClinic(header, "header"),
+  ...extractClinic(normalizedAll, "fulltext"),
+]);
+
+const heartRate = pickBestStrict([
+  ...(healthSection ? extractHeartRate(healthSection, "healthstatus", true) : []),
+  ...extractHeartRate(normalizedAll, "fulltext", false),
+]);
+
+const respiratoryRate = pickBestStrict([
+  ...(healthSection ? extractRespiratoryRate(healthSection, "healthstatus", true) : []),
+  ...extractRespiratoryRate(normalizedAll, "fulltext", false),
+]);
+```
+
+Do the same for weight/attitude: run Health Status section first, then fallback.
+
+--------------------------------------------------------------------
+4) What I changed and why (explicit)
+--------------------------------------------------------------------
+1) Added `extractHeaderBlock()`:
+   - WHY: CityVet metadata (clinic, attending vet, record date) lives in the header,
+     and your current pipeline probably searches full text first and/or doesn’t weight header.
+
+2) Added `extractHealthStatusSection()`:
+   - WHY: Vitals should come from the Health Status block; this prevents random numbers
+     elsewhere from becoming candidates.
+
+3) Added `joinSplitDigits()`:
+   - WHY: pdf.js/OCR sometimes inserts spaces inside numbers (“1 40”), causing partial captures.
+
+4) Replaced loose HR/RR matching with label-anchored patterns + plausibility gate:
+   - WHY: It prevents “10” (from 11-10-2025) and “3” (from vaccines) from ever being valid candidates.
+
+5) Made date extraction explicitly prefer “RECORD DATE”:
+   - WHY: The doc uses “Record Date” as the actual visit date, while “Printed At” is not a visit date.
+
+6) Doctor extraction anchored to “ATTENDING VET(S)” and limited name tokens:
+   - WHY: Reduces false captures and correctly identifies “Dr. Sherri Edgar”.
+
+7) Clinic extraction expanded to brand names + first-line heuristic:
+   - WHY: “CITYVET - LAS COLINAS” lacks CLINIC/HOSPITAL suffix, so your old regex won’t match.
+
+8) Introduced `pickBestStrict()` concept:
+   - WHY: Enforces “hard constraints” (non-empty, plausible) before selecting highest confidence.
+
+--------------------------------------------------------------------
+5) Expected result on the provided CityVet PDF
+--------------------------------------------------------------------
+- clinicName: CITYVET - LAS COLINAS
+- doctorName: SHERRI EDGAR
+- visitDate: 11-10-2025
+- weight: 25.40 (or 25.4)
+- heartRate: 140
+- respiratoryRate: 35
+- attitude: BAR
+
+--------------------------------------------------------------------
+6) Quick debug recommendation (optional but fast)
+--------------------------------------------------------------------
+While testing, log candidate lists (top 5) for each field with:
+- value, confidence, source, reason, and a small matched snippet.
+This makes it obvious why the winner won and helps tune thresholds.
+

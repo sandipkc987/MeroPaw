@@ -1,0 +1,174 @@
+Kasper Pet App – Onboarding Photos Not Showing Fix
+=================================================
+
+Goal
+----
+Make sure the 4 photos uploaded during onboarding correctly appear in:
+- Highlights / Feed (Home screen)
+- Memories screen
+- Profile screen (avatar + gallery)
+…by ensuring onboarding uses the SAME context providers as the main app.
+
+High-Level Plan
+---------------
+1. Ensure there is ONE shared provider tree (Auth, Theme, Pet, Memories, Profile) at the top level.
+2. Ensure both onboarding flow AND main app (tabs) live under this same provider tree.
+3. Use a single RootNavigator that switches between:
+   - Auth/onboarding flow
+   - Main app tabs
+   based on onboarding completion.
+4. Remove any duplicated providers inside navigators.
+
+Step 1 – Fix App.tsx Provider Tree
+----------------------------------
+1. Open App.tsx (or the main entry file for the React Native app).
+2. Wrap the app in the following provider order (adjust import paths to match the existing project):
+
+   ```tsx
+   import React from "react";
+   import { NavigationContainer } from "@react-navigation/native";
+
+   import { AuthProvider } from "./src/contexts/AuthContext";
+   import { ThemeProvider } from "./src/contexts/ThemeContext";
+   import { PetProvider } from "./src/contexts/PetContext";
+   import { MemoriesProvider } from "./src/contexts/MemoriesContext";
+   import { ProfileProvider } from "./src/contexts/ProfileContext";
+
+   import RootNavigator from "./src/navigation/RootNavigator";
+
+   export default function App() {
+     return (
+       <AuthProvider>
+         <ThemeProvider>
+           <PetProvider>
+             <MemoriesProvider>
+               <ProfileProvider>
+                 <NavigationContainer>
+                   <RootNavigator />
+                 </NavigationContainer>
+               </ProfileProvider>
+             </MemoriesProvider>
+           </PetProvider>
+         </ThemeProvider>
+       </AuthProvider>
+     );
+   }
+   ```
+
+3. IMPORTANT: This must be the ONLY place where AuthProvider, PetProvider, MemoriesProvider, and ProfileProvider are created.
+   - Search the codebase for any other `<AuthProvider>`, `<MemoriesProvider>`, `<PetProvider>`, or `<ProfileProvider>` inside navigators and remove those duplicates.
+
+Step 2 – Implement RootNavigator
+--------------------------------
+1. Create or update `src/navigation/RootNavigator.tsx` so it decides whether to show onboarding or the main app based on the user’s onboarding status.
+
+2. Example structure (adapt to the existing flags and file names in the project):
+
+   ```tsx
+   import React from "react";
+   import { createNativeStackNavigator } from "@react-navigation/native-stack";
+   import { useAuth } from "../contexts/AuthContext";
+
+   import AuthNavigator from "./AuthNavigator";   // login + onboarding stack
+   import MainNavigator from "./MainNavigator";   // bottom tab navigator
+
+   export type RootStackParamList = {
+     Auth: undefined;
+     Main: undefined;
+   };
+
+   const Stack = createNativeStackNavigator<RootStackParamList>();
+
+   const RootNavigator = () => {
+     const { user, isLoading } = useAuth();
+
+     if (isLoading) {
+       // Optionally render a splash/loading screen
+       return null;
+     }
+
+     // Adjust this condition to the actual property used in your AuthContext
+     const hasCompletedOnboarding =
+       !!user && user.hasCompletedOnboarding !== false;
+
+     return (
+       <Stack.Navigator screenOptions={{ headerShown: false }}>
+         {!hasCompletedOnboarding ? (
+           <Stack.Screen name="Auth" component={AuthNavigator} />
+         ) : (
+           <Stack.Screen name="Main" component={MainNavigator} />
+         )}
+       </Stack.Navigator>
+     );
+   };
+
+   export default RootNavigator;
+   ```
+
+3. Ensure that:
+   - AuthNavigator contains the onboarding flow, including the screen where the 4 photos are uploaded.
+   - MainNavigator contains the bottom tab navigation for Home, Memories, Profile, etc.
+   - Neither AuthNavigator nor MainNavigator wraps anything in new Auth/Memories/Pet/Profile providers.
+
+Step 3 – Remove Duplicate Providers
+-----------------------------------
+1. Search the project for these components:
+   - `AuthProvider`
+   - `PetProvider`
+   - `MemoriesProvider`
+   - `ProfileProvider`
+
+2. If any of them are used inside navigation files like:
+   - `AuthNavigator.tsx`
+   - `MainNavigator.tsx`
+   - `AppNavigator.tsx`
+   - or any screen-level wrappers
+
+   then REMOVE those inner providers. All screens must rely on the single root provider tree created in App.tsx.
+
+Step 4 – Verify Onboarding Photo Flow
+-------------------------------------
+Once the provider tree is unified:
+
+1. Run the app on a fresh install or after clearing app data.
+2. Go through onboarding and upload 4 photos.
+3. After finishing onboarding and being navigated to the main app:
+   - Home/Feed:
+     - The welcome/highlight section should use `useMemories().getFavoriteMemories(...)` and show one of the uploaded photos as the highlight image.
+   - Memories Screen:
+     - The 4 onboarding photos are saved as photo memories with `isFavorite: true`, so they should appear under “All” and “Favorites” (unless filtered).
+   - Profile Screen:
+     - `user.profileDetails.photos` (and/or `photoDetails`) should be read by ProfileContext.
+     - Avatar should update to the first uploaded photo.
+     - Gallery should contain all uploaded photos.
+
+Step 5 – Check Logs (Optional but Helpful)
+-----------------------------------------
+During testing, watch for these logs in Metro / console:
+
+- From Onboarding:
+  - `OnboardingScreen: Adding memory`
+  - `OnboardingScreen: Memories should now be persisted`
+- From AuthContext:
+  - `completeOnboarding: Updated user: ...`
+- From MemoriesContext:
+  - `MemoriesProvider: Loading memories from storage`
+  - `MemoriesProvider: Seeding missing onboarding photos from profile`
+- From ProfileContext:
+  - `ProfileContext: Syncing profile from user` with `hasPhotos: true`
+- From PetContext:
+  - Logs indicating default pet creation with photos from `user.profileDetails.photos`
+
+If onboarding logs appear, and then **immediately after finishing onboarding** you see logs from MemoriesProvider, ProfileContext, and PetContext, this means everything is now using the same provider instances and the photos should propagate correctly.
+
+How to Use This File with Cursor
+--------------------------------
+1. Open this text file in Cursor.
+2. Follow the steps in order:
+   - First refactor App.tsx to match the provider tree.
+   - Then create/update RootNavigator.tsx.
+   - Then clean up duplicate providers in navigation files.
+3. After implementing, run the app and go through onboarding to confirm the 4 photos populate:
+   - Highlights/Feed
+   - Memories
+   - Profile avatar/gallery

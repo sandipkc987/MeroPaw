@@ -1,0 +1,197 @@
+IN-APP UX / FLOW REVIEW (NON-AUTH)
+
+Executive summary
+- Navigation is fragmented across bottom tabs, in-home quick actions, and a hamburger menu, which creates overlapping pathways to the same areas and makes the user's current context unclear.
+- Core creation flows are inconsistent: the global Add modal shows options that do nothing in some sections, while some screens have no obvious way to add content.
+- Empty, loading, and error states are uneven across key sections (Expenses, Health, Shop), which makes the app feel unfinished and reduces user confidence.
+- Visual system is partially centralized but still mixes theme tokens with hardcoded values, leading to dark-mode risk and uneven "modern SaaS" polish.
+- Data appears stored globally per device (not per pet) in several sections, which can confuse multi-pet users and weaken trust in the data model.
+
+Detailed findings
+
+Navigation & IA
+1) Multiple navigation paradigms for the same destinations
+Problem: Users can reach Memories/Health/Expenses/Reminders via Home quick actions, the ScreenHeader hamburger menu, and sometimes via other in-page controls, while bottom tabs also switch major areas (Home/Shop/Alerts/Settings).
+Why it hurts: Overlapping pathways make it hard to know "where you are" and how to get back; it also creates redundant UI that feels cluttered.
+Solutions:
+- Choose one primary in-app navigation system (tabs + in-context links OR menu-based) and make others secondary or contextual.
+- If keeping quick actions, make them shortcuts to the same routes as the menu and show clear section headers when they open.
+Impact: High.
+
+2) Back behavior returns to Home rather than previous context
+Problem: ScreenHeader’s back button always navigates to "Home" rather than the previous screen.
+Why it hurts: Users lose task continuity and feel disoriented.
+Solutions:
+- Maintain a simple stack for sub-screens or store "previous" in context to return to the last screen.
+- If stack is out of scope, adjust back label to "Back to Home" to set expectation.
+Impact: Medium.
+
+3) Split navigation between Home and App shell
+Problem: Home screen internally renders Memories/Health/Expenses/Reminders when activeScreen is set, while App.tsx also handles a separate layer of settings sub-screens.
+Why it hurts: This creates a fragmented mental model and can make UI feel inconsistent across sections.
+Solutions:
+- Consolidate all screen routing in a single place (App shell), even if it stays lightweight.
+- Alternatively, keep Home as a hub but clearly label it as such and simplify other entry points.
+Impact: Medium.
+
+Creation flows (Add / Capture)
+4) Global Add modal shows actions that do nothing
+Problem: In AddModal, several options only log to console (e.g., Add Expense, Add Health Record, Add Vaccination/Checkup/Medication).
+Why it hurts: Users are given a CTA that appears broken, which is a trust killer.
+Solutions:
+- Hide unavailable options until implemented; or redirect to the relevant screen with the "Add" modal open.
+- Ensure each Add option routes to an actual form or modal.
+Impact: High.
+
+5) Inconsistent entry points for adding items
+Problem: Reminders removes its floating add button and relies on the global Add; Expenses/Health add flows are embedded in their own screens or modals.
+Why it hurts: Users can’t predict where to add new content; they will miss key actions.
+Solutions:
+- Add a consistent "Add" CTA in each section header (top-right).
+- Keep global Add as a shortcut, but ensure it matches the section’s primary add path.
+Impact: Medium.
+
+Home & Feed
+6) Home feed blends multiple content types without clear sectioning
+Problem: The feed mixes favorites, recent items, and a welcome post; empty state is handled, but not clearly tied to next actions.
+Why it hurts: Users may not understand what to do first or what the feed represents.
+Solutions:
+- Add a simple feed header and lightweight section labels (e.g., "Highlights", "Recent").
+- Provide an empty-state CTA (Add Memory / Add Reminder) when the feed is empty.
+Impact: Medium.
+
+7) Search toggle is non-obvious and uses a "special string" state
+Problem: Search is toggled by a small icon and uses a "search" string state, which is not robust and can confuse users if there’s no data.
+Why it hurts: Search becomes a hidden feature and can feel buggy when there are no results.
+Solutions:
+- Make the search affordance more visible or move it into a static search bar.
+- Add a "No results" empty state with tips.
+Impact: Low.
+
+Memories
+8) Memories grid is strong but missing empty-first prompts
+Problem: There is no visible empty state if the user has no memories yet.
+Why it hurts: The first-time experience in the most emotional area is quiet and unhelpful.
+Solutions:
+- Add a friendly empty state with 1–2 CTAs (Take Photo / Add from Gallery).
+Impact: Medium.
+
+Reminders
+9) Reminders are stored globally (not per pet)
+Problem: Reminders use a single storage key and are not scoped to the active pet.
+Why it hurts: Multi-pet users will see mixed reminders, reducing trust in personalization.
+Solutions:
+- Scope reminders to pet ID in storage or include pet filter in UI.
+Impact: Medium.
+
+10) Empty state lacks action
+Problem: "No reminders here yet" is purely informational.
+Why it hurts: Users need a prompt to take the next step.
+Solutions:
+- Add a primary CTA in the empty state to open Add Reminder.
+Impact: Medium.
+
+Expenses
+11) Expense flows rely on receipt analysis but don’t show progress clearly
+Problem: Receipt analysis uses alerts and a busy state, but the UI doesn’t clearly show "processing" within the form.
+Why it hurts: Users might abandon or retry, causing duplicates.
+Solutions:
+- Show a clear inline "Analyzing receipt…" state with spinner and disable Save.
+- Summarize what was extracted with a "Review" callout instead of an alert.
+Impact: Medium.
+
+12) No empty state for expense list
+Problem: The expenses list does not appear to show a clear empty prompt.
+Why it hurts: New users won’t know what to add or why expenses matter.
+Solutions:
+- Provide a zero-state card with CTA: "Add first expense" or "Scan a receipt."
+Impact: Medium.
+
+Health
+13) Health section uses mock data and no empty/add flow
+Problem: Mock records render, but there’s no clear path to add real records and no empty state if data is missing.
+Why it hurts: Users will be unsure how to use this section or whether data is real.
+Solutions:
+- Add an "Add Health Record" CTA in the header and an empty state.
+- If demo data is required, label it as sample.
+Impact: Medium.
+
+Profile & Settings
+14) Profile settings are distinct from Settings tab but overlap conceptually
+Problem: "Profile" appears as a quick action and menu item, while Settings is a bottom tab.
+Why it hurts: Users may not know whether they should go to Profile or Settings for account-level changes.
+Solutions:
+- Merge Profile into Settings or make it a Settings sub-screen.
+- Rename Profile to "Pet Profile" to clarify scope.
+Impact: Medium.
+
+15) Data/Privacy actions are destructive but lack reinforcing UX
+Problem: "Delete All Data" and "Export Data" use alerts but no clear explanation of scope.
+Why it hurts: Users may hesitate or fear data loss.
+Solutions:
+- Add short descriptions and a confirmation screen for destructive actions.
+Impact: Low.
+
+Visual consistency & component system
+16) Mixed theming sources (useTheme vs THEME constants)
+Problem: Several components use THEME constants directly while others use context-based colors.
+Why it hurts: Visual inconsistencies and dark-mode risk; harder to maintain.
+Solutions:
+- Standardize on ThemeContext for all UI components and avoid hardcoded colors.
+Impact: Medium.
+
+17) Button and input variants are inconsistent across screens
+Problem: Some screens use custom headers and buttons with different sizes/weights and colors.
+Why it hurts: App feels stitched together; reduces perceived quality.
+Solutions:
+- Establish a small set of button sizes/variants and apply consistently.
+Impact: Medium.
+
+Error, loading, and empty states
+18) Alerts are used for many non-critical messages
+Problem: Success/error messages often rely on Alert dialogs.
+Why it hurts: Alerts interrupt flow and don’t scale for frequent actions (e.g., add memory, add reminder).
+Solutions:
+- Use lightweight in-app toasts or inline banners for non-critical feedback.
+Impact: Medium.
+
+19) Loading is often implicit rather than explicit
+Problem: Some long operations (image processing, receipt analysis) do not show a clear blocking/loading UI.
+Why it hurts: Users may repeat actions or leave the screen.
+Solutions:
+- Add inline loaders and disable CTA buttons while processing.
+Impact: Medium.
+
+Architecture (UX-impacting)
+20) Data storage is per-device and not clearly per-pet
+Problem: Reminders/expenses use a single AsyncStorage key without pet scoping.
+Why it hurts: Multi-pet users lose clarity; potential data contamination.
+Solutions:
+- Namespace storage keys by pet ID or add filtering by active pet.
+Impact: Medium.
+
+21) Placeholder features are presented as production features
+Problem: Receipt viewer is a static mock; Add actions in multiple screens don’t open real flows.
+Why it hurts: It breaks trust and increases churn.
+Solutions:
+- Hide or label placeholder features; only show full flows to users.
+Impact: High.
+
+Prioritized improvement roadmap (in-app)
+
+Quick wins (1–2 weeks)
+- Remove or disable AddModal options that don’t work; wire Add Expense and Add Health Record to actual flows.
+- Add empty states with CTAs for Memories, Expenses, Health.
+- Make "Add" a consistent header CTA in Reminders/Expenses/Health.
+- Standardize theme usage (replace THEME constants in UI components with useTheme).
+
+Mid-term (2–4 weeks)
+- Simplify navigation: consolidate hamburger menu and quick actions into one consistent pathway.
+- Implement a back/stack behavior for sub-screens or change back labels to "Back to Home."
+- Add inline loading and review states for receipt analysis and media processing.
+
+Larger improvements (4–8 weeks)
+- Unify navigation at the App shell level and reduce Home’s internal routing.
+- Scope storage by pet ID for reminders/expenses and add filters where needed.
+- Create a consistent component system (headers, buttons, inputs, cards) to improve visual polish.
+

@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "Meropaw",
+    "slug": "kasper",
+    "scheme": "meropaw",
+    "orientation": "portrait",
+    "icon": "./assets/meropaw Logo.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0c3b32"
+    },
+    "updates": {
+      "fallbackToCacheTimeout": 0
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.meropaw.app",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.meropaw.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/meropaw Logo.png",
+        "backgroundColor": "#0c3b32"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "580d5671-2edf-4a42-9d5e-2229a0173483"
+      }
+    },
+    "owner": "jetbrains987"
+  }
+}

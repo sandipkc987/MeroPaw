@@ -1,0 +1,744 @@
+================================================================================
+HEALTH SCREEN - COMPLETE CODE WITH ALL LOGIC
+================================================================================
+
+This file contains all relevant code from:
+- src/screens/HealthScreen.tsx
+- src/screens/HealthWellnessSettingsScreen.tsx
+
+================================================================================
+IMPORTS
+================================================================================
+
+import React, { useMemo, useState, useEffect } from "react";
+import { View, Text, ScrollView, TouchableOpacity, Modal, Alert, Linking, Switch, Pressable, StyleSheet } from "react-native";
+import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
+import { useTheme } from "@src/contexts/ThemeContext";
+import { Button, Card, Chip, Input, Row, Divider, SectionTitle } from "@src/components/UI";
+import { Ionicons } from "@expo/vector-icons";
+import ScreenHeader from "@src/components/ScreenHeader";
+import * as DocumentPicker from "expo-document-picker";
+import Svg, { Circle } from "react-native-svg";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import Select from "@src/components/Select";
+import Stepper from "@src/components/Stepper";
+import type { Option } from "@src/components/Select";
+
+================================================================================
+INTERFACES & TYPES
+================================================================================
+
+interface PDFAttachment {
+  id: string;
+  name: string;
+  uri: string;
+  size?: number;
+}
+
+interface HealthRecord {
+  id: string;
+  type: "vaccination" | "checkup" | "medication" | "grooming" | "other";
+  title: string;
+  date: string;
+  notes?: string;
+  vet?: string;
+  pdfs?: PDFAttachment[];
+}
+
+type PreventiveCare = {
+  vaccinesUpToDate: boolean;
+  parasiteControlCurrent: boolean;
+};
+
+type MedicalHistory = {
+  chronicConditionsCount: number;
+  medicationCompliance: number;
+  recentSymptomsLogged: number;
+};
+
+type WeightStatus = {
+  lastRecordedMonthsAgo: number;
+  percentChange: number;
+};
+
+================================================================================
+MOCK DATA
+================================================================================
+
+const mockHealthRecords: HealthRecord[] = [
+  {
+    id: "1",
+    type: "vaccination",
+    title: "Annual Vaccination",
+    date: "2024-01-15",
+    vet: "Dr. Smith",
+    notes: "All vaccines up to date",
+    pdfs: [
+      { id: "1", name: "Vaccination_Record_2024.pdf", uri: "" }
+    ]
+  },
+  {
+    id: "2",
+    type: "checkup",
+    title: "Regular Checkup",
+    date: "2024-01-10",
+    vet: "Dr. Johnson",
+    notes: "Healthy weight, good condition",
+    pdfs: [
+      { id: "2", name: "Checkup_Report.pdf", uri: "" }
+    ]
+  },
+  {
+    id: "3",
+    type: "medication",
+    title: "Flea Treatment",
+    date: "2024-01-05",
+    vet: "Dr. Smith",
+    notes: "Monthly prevention"
+  }
+];
+
+const filterOptions = [
+  { label: "All", value: "all" },
+  { label: "Vaccinations", value: "vaccination" },
+  { label: "Checkups", value: "checkup" },
+  { label: "Medications", value: "medication" },
+  { label: "Grooming", value: "grooming" }
+];
+
+const WELLNESS_OPTIONS: Option[] = [
+  { label: "Weekly", value: "weekly" },
+  { label: "Monthly", value: "monthly" },
+];
+
+const SETTINGS_KEY = "@kasper_settings";
+
+================================================================================
+UTILITY FUNCTIONS & HELPERS
+================================================================================
+
+// Clamp function to limit values within a range
+const clamp = (n: number, min = 0, max = 100) => Math.max(min, Math.min(max, n));
+
+// Settings clamp function (different range)
+function clampSettings(n: number, min = 1, max = 15) {
+  return Math.max(min, Math.min(max, n));
+}
+
+================================================================================
+WELLNESS SCORE CALCULATION LOGIC
+================================================================================
+
+// Calculate Preventive Care Score (0-50 points)
+const scorePreventive = (p: PreventiveCare) => {
+  let score = 0;
+  score += p.vaccinesUpToDate ? 35 : 0;  // 35 points if vaccines are up to date
+  score += p.parasiteControlCurrent ? 15 : 0;  // 15 points if parasite control is current
+  return clamp(score, 0, 50);
+};
+
+// Calculate Medical History Score (0-30 points)
+const scoreMedical = (m: MedicalHistory) => {
+  let score = 30 - Math.min(m.chronicConditionsCount * 5, 15);  // Base 30, minus up to 15 for conditions
+  const compliancePenalty = clamp(10 - m.medicationCompliance / 10, 0, 10);  // Penalty for low compliance
+  score -= compliancePenalty;
+  score -= Math.min(m.recentSymptomsLogged, 5);  // Subtract up to 5 points for symptoms
+  return clamp(score, 0, 30);
+};
+
+// Calculate Weight Status Score (0-20 points)
+const scoreWeight = (w: WeightStatus) => {
+  let score = 0;
+  
+  // Points based on how recent the last weight log was
+  if (w.lastRecordedMonthsAgo <= 3) score += 10;  // 10 points if logged within 3 months
+  else if (w.lastRecordedMonthsAgo <= 6) score += 6;  // 6 points if logged within 6 months
+  else if (w.lastRecordedMonthsAgo <= 12) score += 3;  // 3 points if logged within 12 months
+
+  // Points based on weight stability (percent change)
+  const pct = Math.abs(w.percentChange);
+  if (pct < 5) score += 10;  // 10 points if change is less than 5%
+  else if (pct < 10) score += 6;  // 6 points if change is less than 10%
+  else if (pct < 15) score += 2;  // 2 points if change is less than 15%
+
+  return clamp(score, 0, 20);
+};
+
+// Get score label based on total score
+const getScoreLabel = (score: number, colors: any) => {
+  if (score >= 90) return { text: "Excellent", color: colors.success };
+  if (score >= 75) return { text: "Good", color: colors.accent };
+  if (score >= 60) return { text: "Fair", color: "#f59e0b" };
+  return { text: "Needs Attention", color: colors.danger };
+};
+
+// Total Wellness Score Calculation Logic:
+// Total Score = Preventive Score (0-50) + Medical Score (0-30) + Weight Score (0-20)
+// Maximum possible score = 100 points
+// The score is calculated using useMemo for performance optimization
+
+================================================================================
+UI COMPONENTS
+================================================================================
+
+// Progress Bar Component
+const ProgressBar = ({ value, max }: { value: number; max: number }) => {
+  const { colors } = useTheme();
+  const pct = Math.round((value / max) * 100);
+  return (
+    <View style={{
+      height: 6,
+      width: "100%",
+      backgroundColor: colors.bgSecondary,
+      borderRadius: RADIUS.pill,
+      overflow: "hidden"
+    }}>
+      <View
+        style={{
+          height: "100%",
+          width: `${Math.min(pct, 100)}%`,
+          backgroundColor: colors.accent,
+          borderRadius: RADIUS.pill
+        }}
+      />
+    </View>
+  );
+};
+
+// Toggle Row Component (for boolean settings)
+const ToggleRow = ({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: boolean;
+  onChange: (next: boolean) => void;
+}) => {
+  const { colors } = useTheme();
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingVertical: SPACING.sm,
+        paddingHorizontal: SPACING.md,
+        borderRadius: RADIUS.md,
+        borderWidth: 1,
+        borderColor: colors.borderLight,
+        backgroundColor: colors.card,
+        marginBottom: SPACING.sm
+      }}
+    >
+      <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{label}</Text>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        trackColor={{ false: colors.bgSecondary, true: colors.accent + "55" }}
+        thumbColor={value ? colors.accent : colors.white}
+      />
+    </View>
+  );
+};
+
+// Number Adjust Row Component (for numeric inputs with +/- buttons)
+const NumberAdjustRow = ({
+  label,
+  value,
+  min,
+  max,
+  step = 1,
+  suffix,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step?: number;
+  suffix?: string;
+  onChange: (next: number) => void;
+}) => {
+  const { colors } = useTheme();
+  const decrease = () => onChange(clamp(value - step, min, max));
+  const increase = () => onChange(clamp(value + step, min, max));
+
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingVertical: SPACING.sm,
+        paddingHorizontal: SPACING.md,
+        borderRadius: RADIUS.md,
+        borderWidth: 1,
+        borderColor: colors.borderLight,
+        backgroundColor: colors.card,
+        marginBottom: SPACING.sm
+      }}
+    >
+      <View style={{ flex: 1 }}>
+        <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{label}</Text>
+      </View>
+      <View style={{ flexDirection: "row", alignItems: "center" }}>
+        <TouchableOpacity
+          onPress={decrease}
+          disabled={value <= min}
+          style={{
+            padding: SPACING.xs,
+            opacity: value <= min ? 0.3 : 1,
+            marginRight: SPACING.xs
+          }}
+        >
+          <Ionicons name="remove-circle" size={20} color={colors.accent} />
+        </TouchableOpacity>
+        <Text style={{ ...TYPOGRAPHY.base, fontWeight: "600", color: colors.text }}>
+          {value}{suffix ? suffix : ""}
+        </Text>
+        <TouchableOpacity
+          onPress={increase}
+          disabled={value >= max}
+          style={{
+            padding: SPACING.xs,
+            opacity: value >= max ? 0.3 : 1,
+            marginLeft: SPACING.xs
+          }}
+        >
+          <Ionicons name="add-circle" size={20} color={colors.accent} />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+// Health Card Component (displays individual health record)
+const HealthCard = ({ record, onViewPDF, onDownloadPDF }: { 
+  record: HealthRecord;
+  onViewPDF?: (pdf: PDFAttachment) => void;
+  onDownloadPDF?: (pdf: PDFAttachment) => void;
+}) => {
+  const { colors } = useTheme();
+  
+  // Get icon based on record type
+  const getTypeIcon = () => {
+    switch (record.type) {
+      case "vaccination": return "medical";
+      case "checkup": return "checkmark-circle";
+      case "medication": return "medkit";
+      case "grooming": return "cut";
+      default: return "document-text";
+    }
+  };
+
+  // Get color based on record type
+  const getTypeColor = () => {
+    switch (record.type) {
+      case "vaccination": return "#FF8A5B";
+      case "checkup": return "#6E8BFF";
+      case "medication": return "#F25DA2";
+      case "grooming": return "#8F6CF3";
+      default: return colors.accent;
+    }
+  };
+
+  return (
+    <Card elevated style={{ marginBottom: SPACING.md }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
+        <View style={{
+          width: 48,
+          height: 48,
+          borderRadius: 24,
+          backgroundColor: getTypeColor() + "15",
+          alignItems: "center",
+          justifyContent: "center",
+          marginRight: SPACING.md
+        }}>
+          <Ionicons 
+            name={getTypeIcon() as any}
+            size={24} 
+            color={getTypeColor()} 
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text, flex: 1 }}>
+              {record.title}
+            </Text>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.xs }}>
+            <Ionicons name="calendar-outline" size={14} color={colors.textMuted} />
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginLeft: 4 }}>
+              {new Date(record.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            </Text>
+            {record.vet && (
+              <>
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginHorizontal: 8 }}>•</Text>
+                <Ionicons name="person-outline" size={14} color={colors.textMuted} />
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginLeft: 4 }}>
+                  {record.vet}
+                </Text>
+              </>
+            )}
+          </View>
+          {record.notes && (
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.text, marginTop: SPACING.xs, lineHeight: 20 }}>
+              {record.notes}
+            </Text>
+          )}
+          
+          {/* PDF Attachments */}
+          {record.pdfs && record.pdfs.length > 0 && (
+            <View style={{ marginTop: SPACING.sm, paddingTop: SPACING.sm, borderTopWidth: 1, borderTopColor: colors.borderLight }}>
+              <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, fontWeight: "600", marginBottom: SPACING.xs }}>
+                Attachments ({record.pdfs.length})
+              </Text>
+              {record.pdfs.map((pdf) => (
+                <TouchableOpacity
+                  key={pdf.id}
+                  onPress={() => onViewPDF?.(pdf)}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    paddingVertical: SPACING.xs,
+                    paddingHorizontal: SPACING.sm,
+                    backgroundColor: colors.bgSecondary,
+                    borderRadius: 8,
+                    marginTop: SPACING.xs,
+                  }}
+                >
+                  <Ionicons name="document-text" size={18} color={colors.danger} />
+                  <Text 
+                    style={{ 
+                      ...TYPOGRAPHY.sm, 
+                      color: colors.text, 
+                      marginLeft: SPACING.sm,
+                      flex: 1,
+                    }}
+                    numberOfLines={1}
+                  >
+                    {pdf.name}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => onDownloadPDF?.(pdf)}
+                    style={{ padding: 4 }}
+                  >
+                    <Ionicons name="download-outline" size={18} color={colors.accent} />
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
+        </View>
+      </View>
+    </Card>
+  );
+};
+
+================================================================================
+ADD HEALTH RECORD MODAL - COMPLETE LOGIC
+================================================================================
+
+const AddHealthRecordModal = ({
+  visible,
+  onClose,
+  onSave
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onSave: (record: Omit<HealthRecord, "id">) => void;
+}) => {
+  const { colors } = useTheme();
+  const [title, setTitle] = useState("");
+  const [type, setType] = useState<HealthRecord["type"]>("checkup");
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [vet, setVet] = useState("");
+  const [notes, setNotes] = useState("");
+  const [pdfs, setPdfs] = useState<PDFAttachment[]>([]);
+
+  // PDF Picker Logic
+  const pickPDF = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: "application/pdf",
+        copyToCacheDirectory: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        const newPDF: PDFAttachment = {
+          id: String(Date.now()),
+          name: asset.name || "document.pdf",
+          uri: asset.uri,
+          size: asset.size,
+        };
+        setPdfs(prev => [...prev, newPDF]);
+        Alert.alert("Success", "PDF attached successfully!");
+      }
+    } catch (error) {
+      console.error("Error picking PDF:", error);
+      Alert.alert("Error", "Failed to pick PDF");
+    }
+  };
+
+  // Remove PDF Logic
+  const removePDF = (pdfId: string) => {
+    setPdfs(prev => prev.filter(pdf => pdf.id !== pdfId));
+  };
+
+  // Save Record Logic
+  const handleSave = () => {
+    if (!title.trim()) {
+      Alert.alert("Error", "Please enter a title");
+      return;
+    }
+    onSave({
+      type,
+      title: title.trim(),
+      date,
+      vet: vet.trim() || undefined,
+      notes: notes.trim() || undefined,
+      pdfs: pdfs.length > 0 ? pdfs : undefined,
+    });
+    // Reset form
+    setTitle("");
+    setType("checkup");
+    setDate(new Date().toISOString().split('T')[0]);
+    setVet("");
+    setNotes("");
+    setPdfs([]);
+    onClose();
+  };
+
+  const typeOptions: { label: string; value: HealthRecord["type"]; icon: string }[] = [
+    { label: "Vaccination", value: "vaccination", icon: "medical" },
+    { label: "Checkup", value: "checkup", icon: "checkmark-circle" },
+    { label: "Medication", value: "medication", icon: "medkit" },
+    { label: "Grooming", value: "grooming", icon: "cut" },
+    { label: "Other", value: "other", icon: "document-text" },
+  ];
+
+  // Modal UI rendering code would go here...
+  // (Full JSX structure from lines 441-605 of HealthScreen.tsx)
+};
+
+================================================================================
+MAIN HEALTH SCREEN - STATE MANAGEMENT & LOGIC
+================================================================================
+
+export default function HealthScreen() {
+  const { colors } = useTheme();
+  
+  // State Management
+  const [selectedFilter, setSelectedFilter] = useState("all");
+  const [healthRecords, setHealthRecords] = useState(mockHealthRecords);
+  const [showAddModal, setShowAddModal] = useState(false);
+  
+  // Wellness Score State
+  const [preventive, setPreventive] = useState<PreventiveCare>({
+    vaccinesUpToDate: true,
+    parasiteControlCurrent: true,
+  });
+  const [medical, setMedical] = useState<MedicalHistory>({
+    chronicConditionsCount: 1,
+    medicationCompliance: 80,
+    recentSymptomsLogged: 1,
+  });
+  const [weightStatus, setWeightStatus] = useState<WeightStatus>({
+    lastRecordedMonthsAgo: 7,
+    percentChange: 6,
+  });
+  const [activeWellnessTab, setActiveWellnessTab] = useState<"preventive" | "medical" | "weight">("preventive");
+
+  // Wellness Score Calculations (Memoized for Performance)
+  const preventiveScore = useMemo(() => scorePreventive(preventive), [preventive]);
+  const medicalScore = useMemo(() => scoreMedical(medical), [medical]);
+  const weightScore = useMemo(() => scoreWeight(weightStatus), [weightStatus]);
+  const totalScore = useMemo(() => 
+    clamp(Math.round(preventiveScore + medicalScore + weightScore), 0, 100), 
+    [preventiveScore, medicalScore, weightScore]
+  );
+  
+  const scoreLabel = useMemo(() => getScoreLabel(totalScore, colors), [totalScore, colors]);
+
+  // Filter Logic
+  const filteredRecords = healthRecords.filter(record => 
+    selectedFilter === "all" || record.type === selectedFilter
+  );
+
+  // Save Health Record Logic
+  const handleSaveRecord = (recordData: Omit<HealthRecord, "id">) => {
+    const newRecord: HealthRecord = {
+      ...recordData,
+      id: String(Date.now()),
+    };
+    setHealthRecords(prev => [newRecord, ...prev]);
+    Alert.alert("Success", "Health record added successfully!");
+  };
+
+  // PDF View Logic
+  const handleViewPDF = async (pdf: PDFAttachment) => {
+    try {
+      const canOpen = await Linking.canOpenURL(pdf.uri);
+      if (canOpen) {
+        await Linking.openURL(pdf.uri);
+      } else {
+        Alert.alert("Error", "Cannot open PDF file");
+      }
+    } catch (error) {
+      console.error("Error opening PDF:", error);
+      Alert.alert("Error", "Failed to open PDF");
+    }
+  };
+
+  // PDF Download Logic
+  const handleDownloadPDF = async (pdf: PDFAttachment) => {
+    try {
+      // For now, just show an alert. In production, you'd save to device storage
+      Alert.alert("Download", `Downloading ${pdf.name}...`);
+      // TODO: Implement actual file download/save functionality
+    } catch (error) {
+      console.error("Error downloading PDF:", error);
+      Alert.alert("Error", "Failed to download PDF");
+    }
+  };
+
+  // Reset Wellness Inputs Logic
+  const resetWellnessInputs = () => {
+    setPreventive({ vaccinesUpToDate: true, parasiteControlCurrent: true });
+    setMedical({ chronicConditionsCount: 1, medicationCompliance: 80, recentSymptomsLogged: 1 });
+    setWeightStatus({ lastRecordedMonthsAgo: 7, percentChange: 6 });
+  };
+
+  // Wellness Tabs Configuration
+  const wellnessTabs: { key: "preventive" | "medical" | "weight"; label: string }[] = [
+    { key: "preventive", label: "Preventive Care" },
+    { key: "medical", label: "Medical History" },
+    { key: "weight", label: "Weight & Check-ins" },
+  ];
+
+  // Main render logic would go here...
+  // (Full JSX structure from lines 686-1021 of HealthScreen.tsx)
+}
+
+================================================================================
+HEALTH & WELLNESS SETTINGS SCREEN - COMPLETE LOGIC
+================================================================================
+
+export default function HealthWellnessSettingsScreen() {
+  const { colors } = useTheme();
+  
+  // State Management
+  const [weightAlert, setWeightAlert] = useState(true);
+  const [weightThreshold, setWeightThreshold] = useState(5);
+  const [wellnessUpdates, setWellnessUpdates] = useState(true);
+  const [wellnessCadence, setWellnessCadence] = useState("weekly");
+  const [vetSync, setVetSync] = useState(false);
+
+  // Load Settings Logic
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  const loadSettings = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(SETTINGS_KEY);
+      if (stored) {
+        const settings = JSON.parse(stored);
+        if (settings.weightAlert !== undefined) setWeightAlert(settings.weightAlert);
+        if (settings.weightThreshold !== undefined) setWeightThreshold(settings.weightThreshold);
+        if (settings.wellnessUpdates !== undefined) setWellnessUpdates(settings.wellnessUpdates);
+        if (settings.wellnessCadence !== undefined) setWellnessCadence(settings.wellnessCadence);
+        if (settings.vetSync !== undefined) setVetSync(settings.vetSync);
+      }
+    } catch (error) {
+      console.error("Failed to load settings:", error);
+    }
+  };
+
+  // Save Settings Logic (Auto-save with debounce)
+  const saveSettings = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(SETTINGS_KEY);
+      const settings = stored ? JSON.parse(stored) : {};
+      settings.weightAlert = weightAlert;
+      settings.weightThreshold = weightThreshold;
+      settings.wellnessUpdates = wellnessUpdates;
+      settings.wellnessCadence = wellnessCadence;
+      settings.vetSync = vetSync;
+      await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch (error) {
+      console.error("Failed to save settings:", error);
+    }
+  };
+
+  // Auto-save on state change (debounced)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      saveSettings();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [weightAlert, weightThreshold, wellnessUpdates, wellnessCadence, vetSync]);
+
+  // Calendar Connection Logic
+  function handleConnectCalendar() {
+    setVetSync(true);
+    Alert.alert("Vet Sync", "Mock: Connected to your device calendar for vet appointments.");
+  }
+
+  // Threshold Change Handler (with clamping)
+  function onThresholdChange(v: number) {
+    setWeightThreshold(clampSettings(v, 1, 15));
+  }
+
+  // Main render logic would go here...
+  // (Full JSX structure from lines 81-152 of HealthWellnessSettingsScreen.tsx)
+}
+
+================================================================================
+KEY LOGIC EXPLANATIONS
+================================================================================
+
+1. WELLNESS SCORE CALCULATION:
+   - Preventive Care (0-50 points):
+     * Vaccines up-to-date: 35 points
+     * Parasite control current: 15 points
+   
+   - Medical History (0-30 points):
+     * Base score: 30 points
+     * Minus 5 points per chronic condition (max 15 points deduction)
+     * Minus penalty for medication non-compliance (0-10 points)
+     * Minus 1 point per recent symptom logged (max 5 points deduction)
+   
+   - Weight & Check-ins (0-20 points):
+     * Recency points: 10 (≤3mo), 6 (≤6mo), 3 (≤12mo), 0 (>12mo)
+     * Stability points: 10 (<5% change), 6 (<10% change), 2 (<15% change), 0 (≥15% change)
+   
+   - Total Score: Sum of all three categories (0-100)
+
+2. HEALTH RECORD FILTERING:
+   - Filters records by type (all, vaccination, checkup, medication, grooming)
+   - Uses simple filter: selectedFilter === "all" || record.type === selectedFilter
+
+3. PDF HANDLING:
+   - Uses expo-document-picker to select PDF files
+   - Stores PDF metadata (id, name, uri, size)
+   - View: Opens PDF using Linking API
+   - Download: Placeholder for future file system integration
+
+4. SETTINGS PERSISTENCE:
+   - Uses AsyncStorage to persist settings
+   - Auto-saves with 500ms debounce on any setting change
+   - Loads settings on component mount
+
+5. STATE MANAGEMENT:
+   - Local state for all UI interactions
+   - Memoized calculations for performance
+   - Proper cleanup in useEffect hooks
+
+================================================================================
+END OF HEALTH CODE
+================================================================================
+
+

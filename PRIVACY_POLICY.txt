@@ -1,0 +1,80 @@
+Meropaw Privacy Policy
+Effective date: 2026-02-04
+
+This Privacy Policy explains how Meropaw (the "App") collects, uses, and shares
+information when you use the App. By using the App, you agree to this policy.
+
+1) Information We Collect
+
+Information you provide
+- Account and contact information: email (for sign-in), and optional profile
+  details such as name and phone number.
+- Pet profile information: pet name, bio, breed, age or birth date, color,
+  microchip number, allergies, personality traits, wellness notes, and
+  achievements.
+- Activities and reminders: activity type, title, notes, dates/times, time zone,
+  and completion status.
+- Health records and appointments: record type, title, dates, notes, vet/clinic
+  details, appointment location details, and uploaded attachments (e.g., PDFs).
+- Memories and media: photos or videos you upload, titles, notes, and related
+  metadata (e.g., favorites, dimensions).
+- Expenses and receipts: expense details (amount, category, date, notes,
+  merchant) and receipt files.
+
+Information collected automatically or stored on your device
+- Device identifiers for sign-in alerts: device ID/label and first/last seen
+  timestamps.
+- Local app storage: preferences (e.g., cloud sync toggle), cached data to speed
+  up the app, and temporary onboarding metadata. Photos and large files are not
+  stored in local storage; they are uploaded to cloud storage.
+
+2) How We Use Information
+- Provide core features such as pet profiles, activity tracking, health records,
+  reminders, expenses, and memories.
+- Sync data across devices when cloud sync is enabled.
+- Process receipts and clinical summaries to extract structured data (e.g.,
+  dates, totals, clinic details) to help auto-fill records.
+- Send in-app notifications about reminders, health updates, and receipts.
+- Maintain account security, including new device sign-in alerts.
+- Improve reliability and troubleshoot issues.
+
+3) How We Share Information
+- Cloud services: We use Supabase to host our database and store media files.
+- Document processing: When you upload a receipt or clinical summary for
+  automated extraction, we send the document to Google Cloud Document AI to
+  extract relevant fields. We send only the document needed for the feature.
+- Service providers: We may share data with trusted vendors who help us operate
+  the App, under confidentiality obligations.
+We do not sell your personal information.
+
+4) Data Storage and Retention
+- Your data is stored in our cloud database and storage buckets while your
+  account is active or as needed to provide the App.
+- You can delete records (e.g., health records, expenses, memories) within the
+  App. If you request account deletion, we will remove your stored data within a
+  reasonable time, subject to legal requirements.
+- Local data stored on your device remains until you remove it or uninstall the
+  App.
+
+5) Security
+We use reasonable safeguards to protect your information. No method of
+transmission or storage is completely secure, so we cannot guarantee absolute
+security.
+
+6) Your Choices and Rights
+- Access, update, or delete your data in the App.
+- Turn off cloud sync in settings (some features may require it).
+- Manage device permissions (camera, photos) in your device settings.
+
+7) Children's Privacy
+The App is not intended for children under 13, and we do not knowingly collect
+personal information from children.
+
+8) Changes to This Policy
+We may update this policy from time to time. We will update the effective date
+above and may notify you in the App if changes are material.
+
+9) Contact Us
+For questions or requests, contact us using the support email listed in the
+App or through the in-app support option.
+

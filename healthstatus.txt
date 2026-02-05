@@ -1,0 +1,163 @@
+Health Status Extraction Logic (client + server)
+================================================
+
+Overview
+--------
+We extract health status (weight, HR, RR, attitude) and metadata (visit date, doctor, clinic)
+from PDF uploads. The flow is:
+1) User uploads a PDF in Add Health Record.
+2) Client extracts raw text on web (pdf.js) and calls the edge function.
+3) Edge function parses the text and returns normalized fields.
+4) Client merges extracted values with existing status, updates Health Status, and prompts
+   for missing fields.
+5) Visit date / doctor / clinic are used to prefill fields in the Add Health Record modal.
+
+Client: Add Health Record (HealthScreen.tsx)
+-------------------------------------------
+Location: src/screens/HealthScreen.tsx
+
+1) Web text extraction + call edge function
+ - We use pdf.js in the browser to extract text from the uploaded PDF.
+ - We pass that text to the edge function for parsing.
+
+Snippet:
+  // In pickPDF()
+  const pdfjsLib = await loadPdfJs();
+  const resp = await fetch(asset.uri);
+  const buffer = await resp.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+  let text = "";
+  for (let i = 1; i <= doc.numPages; i += 1) {
+    const page = await doc.getPage(i);
+    const content = await page.getTextContent();
+    text += `\n${content.items.map((item: any) => item.str || "").join(" ")}`;
+  }
+  const extraction = await analyzeClinicalSummary("", text);
+
+2) Autofill fields from server extraction
+ - Date and Veterinarian/Clinic are set when the edge function returns them.
+
+Snippet:
+  const visitDate = extraction?.normalized?.visitDate?.value;
+  if (visitDate) {
+    const parsed = new Date(visitDate);
+    if (!Number.isNaN(parsed.getTime())) {
+      setDate(parsed.toISOString().split("T")[0]);
+    }
+  }
+  const doctor = extraction?.normalized?.doctorName?.value;
+  const clinic = extraction?.normalized?.clinicName?.value;
+  const vetLabel = [doctor, clinic].filter(Boolean).join(" · ");
+  if (vetLabel && !vet.trim()) {
+    setVet(vetLabel);
+  }
+
+3) Save record -> parse clinical summary (full flow)
+ - If PDFs were uploaded and stored, we call the edge function to parse.
+ - We attach the extracted data to the PDF record.
+
+Snippet:
+  const extraction = await analyzeClinicalSummary(pdf.path, rawText);
+  if (extraction?.normalized) {
+    return { ...pdf, extracted: extraction.normalized };
+  }
+
+4) Merge extracted + previous status
+ - If some vitals are missing, we keep old values for those fields and update the rest.
+ - We tag source="auto" for extracted, source="manual" for manual entry.
+
+Snippet:
+  const next = {
+    updatedAt: new Date().toISOString(),
+    source: "auto",
+    weight: normalizeStatusValue(extracted.weight) ?? normalizeStatusValue(fallback?.weight),
+    heartRate: normalizeStatusValue(extracted.heartRate) ?? normalizeStatusValue(fallback?.heartRate),
+    respiratoryRate: normalizeStatusValue(extracted.respiratoryRate) ?? normalizeStatusValue(fallback?.respiratoryRate),
+    attitude: normalizeStatusValue(extracted.attitude) ?? normalizeStatusValue(fallback?.attitude),
+  };
+
+5) Missing fields prompt
+ - If any vital is missing, we ask the user to fill them.
+
+Snippet:
+  if (missing.length > 0) {
+    Alert.alert(
+      "Health record added",
+      "Some vitals were missing. Do you want to enter them now?",
+      [
+        { text: "Not now", style: "cancel" },
+        { text: "Enter manually", onPress: () => setShowManualStatusModal(true) },
+      ]
+    );
+  }
+
+Server: Edge Function (parse-clinical-summary/index.ts)
+-------------------------------------------------------
+Location: supabase/functions/parse-clinical-summary/index.ts
+
+1) Input
+ - Accepts filePath (supabase storage) and/or rawText.
+ - If rawText is missing, it downloads the file and extracts text.
+
+2) Normalization
+ - Uppercases the text and normalizes whitespace.
+
+Snippet:
+  function normalizeText(input: string): string {
+    return input
+      .toUpperCase()
+      .replace(/[\u2013\u2014]/g, "-")
+      .replace(/[^\S\r\n]+/g, " ")
+      .replace(/[•·]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+3) Field extraction
+ - Uses regex patterns for each field (weight, HR, RR, attitude, visit date).
+ - Also extracts doctor and clinic names.
+
+Key functions:
+  extractWeight(text, inSection)
+  extractHeartRate(text, inSection)
+  extractRespiratoryRate(text, inSection)
+  extractAttitude(text, inSection)
+  extractVisitDate(text, inSection)
+  extractDoctor(text, inSection)
+  extractClinic(text, inSection)
+
+Doctor / Clinic examples:
+  extractDoctor:
+    /\b(?:DR\.?|DOCTOR|DVM|VETERINARIAN)\b[:\s-]*([A-Z][A-Z]+(?:\s+[A-Z][A-Z]+){0,3})\b/g
+  extractClinic:
+    /\b([A-Z0-9& ]{3,40})\s*(CLINIC|HOSPITAL|VETERINARY|ANIMAL HOSPITAL|ANIMAL CLINIC)\b/g
+
+4) Best-value selection
+ - Each extractor returns candidates with confidence scores.
+ - pickBest() chooses the highest-confidence result.
+
+Snippet:
+  const doctorName = pickBest([
+    ...extractDoctor(sectionText, true),
+    ...extractDoctor(normalized, false),
+  ]);
+  const clinicName = pickBest([
+    ...extractClinic(sectionText, true),
+    ...extractClinic(normalized, false),
+  ]);
+
+5) Output
+ - Returns a JSON payload with normalized fields and confidence.
+
+Snippet:
+  normalized: {
+    weight, heartRate, respiratoryRate, attitude,
+    visitDate, visitType, doctorName, clinicName
+  }
+
+Notes
+-----
+- Only server extraction is used for doctor/clinic/date auto-fill.
+- If extraction fails, the user can enter values manually.
+- Health status source label uses "From PDF" when source="auto", otherwise "Manual entry".
+

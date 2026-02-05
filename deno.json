@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "lib": [
+      "deno.window",
+      "dom",
+      "dom.iterable"
+    ]
+  },
+  "fmt": {
+    "options": {
+      "lineWidth": 100
+    }
+  }
+}
+

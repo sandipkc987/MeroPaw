@@ -1,0 +1,550 @@
+================================================================================
+KASPER APP – COMPLETE PROFILE SCREEN FLOW
+================================================================================
+This file contains ALL ProfileScreen code and dependencies for testing.
+
+================================================================================
+FILE: src/screens/ProfileScreen.tsx
+================================================================================
+[See full file - 2316 lines - Main ProfileScreen component with all sections, modals, and functionality]
+
+================================================================================
+FILE: src/contexts/ProfileContext.tsx
+================================================================================
+import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useAuth } from "@src/contexts/AuthContext";
+
+interface ProfileData {
+  petName: string;
+  ownerEmail?: string;
+  ownerName?: string;
+  ownerPhone?: string;
+  bio?: string;
+  avatarUrl?: string;
+  coverUrl?: string;
+  breed?: string;
+  birthDate?: string;
+  color?: string;
+  microchip?: string;
+  allergies?: string;
+}
+
+interface ProfileContextType {
+  profile: ProfileData;
+  updateProfile: (updates: Partial<ProfileData>) => Promise<void>;
+  loadProfile: () => Promise<void>;
+}
+
+const ProfileContext = createContext<ProfileContextType | undefined>(undefined);
+
+const STORAGE_KEY = "@kasper_profile";
+
+const defaultProfile: ProfileData = {
+  petName: "Kasper",
+  ownerEmail: "",
+  ownerName: "",
+  ownerPhone: "",
+  bio: "",
+  avatarUrl: "https://via.placeholder.com/120/8B5CF6/ffffff?text=K",
+  coverUrl: "https://images.unsplash.com/photo-1601758228041-f3b2795255f1?w=1200&h=400",
+  breed: "",
+  birthDate: "",
+  color: "",
+  microchip: "",
+  allergies: "",
+};
+
+export function ProfileProvider({ children }: { children: React.ReactNode }) {
+  const [profile, setProfile] = useState<ProfileData>(defaultProfile);
+  const { user } = useAuth();
+
+  const loadProfile = useCallback(async () => {
+    try {
+      const stored = await AsyncStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        setProfile(JSON.parse(stored));
+      }
+    } catch (error) {
+      console.error("Failed to load profile:", error);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProfile();
+  }, [loadProfile]);
+
+  useEffect(() => {
+    if (!user) return;
+    const details = (user as any)?.profileDetails || {};
+
+    setProfile(prev => {
+      const updated: ProfileData = {
+        ...prev,
+        petName: user.petName || prev.petName,
+        ownerEmail: user.email || prev.ownerEmail,
+        bio: details.bio ?? prev.bio,
+        breed: details.breed ?? prev.breed,
+        birthDate: details.birthDate ?? prev.birthDate,
+        color: details.color ?? prev.color,
+        microchip: details.microchip ?? prev.microchip,
+        allergies: details.allergies ?? prev.allergies,
+      };
+
+      const photos: string[] | undefined = details.photos || details.photoDetails?.map((p: any) => p.uri);
+      if (photos?.length) {
+        updated.avatarUrl = photos[0] || updated.avatarUrl;
+        updated.coverUrl = photos[1] || photos[0] || updated.coverUrl;
+      }
+
+      if (JSON.stringify(updated) === JSON.stringify(prev)) {
+        return prev;
+      }
+
+      AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updated)).catch(err =>
+        console.error("ProfileContext: Failed to sync profile", err)
+      );
+      return updated;
+    });
+  }, [user]);
+
+  const updateProfile = useCallback(
+    async (updates: Partial<ProfileData>) => {
+      const updatedProfile = { ...profile, ...updates };
+      setProfile(updatedProfile);
+      try {
+        await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updatedProfile));
+      } catch (error) {
+        console.error("Failed to save profile:", error);
+      }
+    },
+    [profile]
+  );
+
+  const value = {
+    profile,
+    updateProfile,
+    loadProfile,
+  };
+
+  return (
+    <ProfileContext.Provider value={value}>
+      {children}
+    </ProfileContext.Provider>
+  );
+}
+
+export function useProfile() {
+  const context = useContext(ProfileContext);
+  if (context === undefined) {
+    throw new Error("useProfile must be used within a ProfileProvider");
+  }
+  return context;
+}
+
+================================================================================
+FILE: src/contexts/PetContext.tsx
+================================================================================
+import React, { createContext, useContext, useState, useEffect } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useAuth } from "@src/contexts/AuthContext";
+
+export interface Pet {
+  id: string;
+  name: string;
+  bio?: string;
+  breed?: string;
+  age?: string;
+  birthDate?: string;
+  color?: string;
+  microchip?: string;
+  allergies?: string;
+  photos: string[];
+  createdAt: number;
+}
+
+interface PetContextType {
+  pets: Pet[];
+  activePetId: string | null;
+  addPet: (pet: Omit<Pet, 'id' | 'createdAt'>) => Promise<string>;
+  updatePet: (id: string, updates: Partial<Pet>) => Promise<void>;
+  deletePet: (id: string) => Promise<void>;
+  setActivePet: (id: string) => Promise<void>;
+  getActivePet: () => Pet | null;
+}
+
+const PetContext = createContext<PetContextType | undefined>(undefined);
+
+const PETS_STORAGE_KEY = "@kasper_pets";
+const ACTIVE_PET_KEY = "@kasper_active_pet";
+
+const sanitizePhotos = (photos: string[] = []) => {
+  return photos.filter(uri => uri && !uri.startsWith("data:")).slice(0, 10);
+};
+
+export function PetProvider({ children }: { children: React.ReactNode }) {
+  const [pets, setPets] = useState<Pet[]>([]);
+  const [activePetId, setActivePetId] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const { user } = useAuth();
+
+  // Load pets and active pet from storage
+  useEffect(() => {
+    const loadPets = async () => {
+      try {
+        const [storedPets, storedActivePet] = await Promise.all([
+          AsyncStorage.getItem(PETS_STORAGE_KEY),
+          AsyncStorage.getItem(ACTIVE_PET_KEY),
+        ]);
+
+        if (storedPets) {
+          const parsedPets = JSON.parse(storedPets);
+          setPets(parsedPets);
+
+          if (storedActivePet) {
+            const activeId = JSON.parse(storedActivePet);
+            if (parsedPets.find((p: Pet) => p.id === activeId)) {
+              setActivePetId(activeId);
+            } else if (parsedPets.length > 0) {
+              setActivePetId(parsedPets[0].id);
+            }
+          } else if (parsedPets.length > 0) {
+            setActivePetId(parsedPets[0].id);
+            await AsyncStorage.setItem(ACTIVE_PET_KEY, JSON.stringify(parsedPets[0].id));
+          }
+        } else {
+          setPets([]);
+          setActivePetId(null);
+        }
+      } catch (error) {
+        console.error("Failed to load pets:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadPets();
+  }, []);
+
+  useEffect(() => {
+    if (!user?.profileDetails) return;
+    if (pets.length > 0) return;
+    if (isLoading) return;
+
+    const details = user.profileDetails;
+    const signupPhotos: string[] = Array.isArray(details.photos)
+      ? details.photos
+      : details.photoDetails?.map((p: any) => p.uri).filter(Boolean) || [];
+    const defaultPet: Pet = {
+      id: `pet_${Date.now()}`,
+      name: user.petName || "Kasper",
+      bio: details.bio,
+      breed: details.breed,
+      photos: sanitizePhotos(signupPhotos),
+      createdAt: Date.now(),
+    };
+    setPets([defaultPet]);
+    setActivePetId(defaultPet.id);
+    AsyncStorage.setItem(PETS_STORAGE_KEY, JSON.stringify([defaultPet])).catch(err =>
+      console.error("PetContext: failed to seed pets", err)
+    );
+    AsyncStorage.setItem(ACTIVE_PET_KEY, JSON.stringify(defaultPet.id)).catch(err =>
+      console.error("PetContext: failed to store active pet", err)
+    );
+  }, [user, pets.length, isLoading]);
+
+  const addPet = async (petData: Omit<Pet, 'id' | 'createdAt'>): Promise<string> => {
+    const newPet: Pet = {
+      ...petData,
+      photos: sanitizePhotos(petData.photos),
+      id: `pet_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      createdAt: Date.now(),
+    };
+
+    const updatedPets = [...pets, newPet];
+    setPets(updatedPets);
+    await AsyncStorage.setItem(PETS_STORAGE_KEY, JSON.stringify(updatedPets));
+    
+    // Set as active pet if it's the first one
+    if (pets.length === 0) {
+      await setActivePet(newPet.id);
+    }
+
+    return newPet.id;
+  };
+
+  const updatePet = async (id: string, updates: Partial<Pet>) => {
+    const updatedPets = pets.map(pet => 
+      pet.id === id ? { ...pet, ...updates, photos: updates.photos ? sanitizePhotos(updates.photos) : pet.photos } : pet
+    );
+    setPets(updatedPets);
+    await AsyncStorage.setItem(PETS_STORAGE_KEY, JSON.stringify(updatedPets));
+  };
+
+  const deletePet = async (id: string) => {
+    const updatedPets = pets.filter(pet => pet.id !== id);
+    setPets(updatedPets);
+    await AsyncStorage.setItem(PETS_STORAGE_KEY, JSON.stringify(updatedPets));
+    
+    // If deleted pet was active, set first pet as active
+    if (activePetId === id && updatedPets.length > 0) {
+      await setActivePet(updatedPets[0].id);
+    } else if (updatedPets.length === 0) {
+      setActivePetId(null);
+      await AsyncStorage.removeItem(ACTIVE_PET_KEY);
+    }
+  };
+
+  const setActivePet = async (id: string) => {
+    setActivePetId(id);
+    await AsyncStorage.setItem(ACTIVE_PET_KEY, JSON.stringify(id));
+  };
+
+  const getActivePet = (): Pet | null => {
+    return pets.find(pet => pet.id === activePetId) || null;
+  };
+
+  return (
+    <PetContext.Provider
+      value={{
+        pets,
+        activePetId,
+        addPet,
+        updatePet,
+        deletePet,
+        setActivePet,
+        getActivePet,
+      }}
+    >
+      {children}
+    </PetContext.Provider>
+  );
+}
+
+export function usePets() {
+  const context = useContext(PetContext);
+  if (context === undefined) {
+    throw new Error("usePets must be used within a PetProvider");
+  }
+  return context;
+}
+
+================================================================================
+FILE: src/components/ScreenHeader.tsx
+================================================================================
+import React, { useState } from "react";
+import { View, Text, TouchableOpacity, Modal, Pressable } from "react-native";
+import { SPACING, TYPOGRAPHY, RADIUS, SHADOWS } from "@src/theme";
+import { useTheme } from "@src/contexts/ThemeContext";
+import { Ionicons } from "@expo/vector-icons";
+import { useNavigation } from "@src/contexts/NavigationContext";
+
+interface ScreenHeaderProps {
+  title: string;
+  showBackButton?: boolean;
+  showMenuButton?: boolean;
+}
+
+export default function ScreenHeader({ title, showBackButton = true, showMenuButton = true }: ScreenHeaderProps) {
+  const { colors } = useTheme();
+  const { navigateTo } = useNavigation();
+  const [menuVisible, setMenuVisible] = useState(false);
+
+  const menuItems = [
+    { label: "Profile", icon: "person-outline", color: colors.accent },
+    { label: "Health", icon: "medical-outline", color: "#F25DA2" },
+    { label: "Expenses", icon: "wallet-outline", color: "#FF8A5B" },
+    { label: "Memories", icon: "images-outline", color: "#6E8BFF" },
+    { label: "Reminders", icon: "notifications-outline", color: "#8F6CF3" },
+  ];
+
+  return (
+    <>
+      <View style={{
+        flexDirection: "row",
+        alignItems: "center",
+        justifyContent: "space-between",
+        paddingHorizontal: SPACING.lg,
+        paddingTop: SPACING.lg + 4,
+        paddingBottom: SPACING.md,
+        backgroundColor: colors.bg,
+        borderBottomWidth: 1,
+        borderBottomColor: colors.borderLight
+      }}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          {showBackButton && (
+            <TouchableOpacity
+              onPress={() => navigateTo("Home")}
+              style={{
+                alignItems: "center",
+                justifyContent: "center",
+                width: 36,
+                height: 36,
+                backgroundColor: colors.surface,
+                borderRadius: 18,
+                marginRight: SPACING.sm
+              }}
+            >
+              <Ionicons name="chevron-back" size={18} color={colors.text} />
+            </TouchableOpacity>
+          )}
+          <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
+            {title}
+          </Text>
+        </View>
+
+        {showMenuButton && (
+          <TouchableOpacity
+            onPress={() => setMenuVisible(true)}
+            style={{
+              alignItems: "center",
+              justifyContent: "center",
+              width: 36,
+              height: 36,
+              backgroundColor: colors.surface,
+              borderRadius: 18
+            }}
+          >
+            <Ionicons name="menu" size={18} color={colors.text} />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Hamburger Menu Modal */}
+      <Modal
+        visible={menuVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setMenuVisible(false)}
+      >
+        <Pressable
+          style={{
+            flex: 1,
+            backgroundColor: "rgba(0, 0, 0, 0.5)",
+            justifyContent: "flex-start",
+            alignItems: "flex-end",
+            paddingTop: SPACING.lg + 50,
+            paddingRight: SPACING.md
+          }}
+          onPress={() => setMenuVisible(false)}
+        >
+          <Pressable onPress={(e) => e.stopPropagation()}>
+            <View style={{
+              backgroundColor: colors.card,
+              borderRadius: RADIUS.xl,
+              paddingVertical: SPACING.xs,
+              minWidth: 220,
+              ...SHADOWS.lg
+            }}>
+              {menuItems.map((item, index) => (
+                <TouchableOpacity
+                  key={item.label}
+                  onPress={() => {
+                    navigateTo(item.label);
+                    setMenuVisible(false);
+                  }}
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    paddingHorizontal: SPACING.lg,
+                    paddingVertical: SPACING.md,
+                    borderBottomWidth: index < menuItems.length - 1 ? 1 : 0,
+                    borderBottomColor: colors.borderLight
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: 18,
+                    backgroundColor: item.color + "15",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    marginRight: SPACING.md
+                  }}>
+                    <Ionicons 
+                      name={item.icon as any} 
+                      size={20} 
+                      color={item.color} 
+                    />
+                  </View>
+                  <Text style={{ ...TYPOGRAPHY.md, color: colors.text, fontWeight: "600", flex: 1 }}>
+                    {item.label}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
+                </TouchableOpacity>
+              ))}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
+
+================================================================================
+FILE: src/components/UI.tsx
+================================================================================
+[See full file - Contains Button, Input, Card, Chip, SectionTitle, Row, Divider, Pill components]
+
+================================================================================
+FILE: src/contexts/ThemeContext.tsx
+================================================================================
+[See full file - Theme provider with light/dark theme support]
+
+================================================================================
+FILE: src/theme.ts
+================================================================================
+[See full file - Theme constants: RADIUS, SPACING, TYPOGRAPHY, SHADOWS]
+
+================================================================================
+FILE: src/contexts/AuthContext.tsx
+================================================================================
+[See full file - Authentication context used by ProfileScreen]
+
+================================================================================
+KEY IMPORTS IN ProfileScreen.tsx:
+================================================================================
+- React, useState, useEffect, useMemo, useCallback, memo
+- View, Text, ScrollView, Image, TouchableOpacity, Modal, TextInput, Alert
+- LinearGradient from expo-linear-gradient
+- RADIUS, SPACING, TYPOGRAPHY, SHADOWS from @src/theme
+- useTheme from @src/contexts/ThemeContext
+- Button, Card, Input from @src/components/UI
+- useAuth from @src/contexts/AuthContext
+- useProfile from @src/contexts/ProfileContext
+- usePets from @src/contexts/PetContext
+- Ionicons from @expo/vector-icons
+- ScreenHeader from @src/components/ScreenHeader
+- ImagePicker from expo-image-picker
+- AsyncStorage from @react-native-async-storage/async-storage
+
+================================================================================
+KEY FEATURES IN ProfileScreen:
+================================================================================
+1. Cover Photo & Profile Picture (Facebook-style with camera overlays)
+2. Tab Navigation: About, Personality, Wellness, Achievements
+3. About Section: Breed, Birth Date, Color, Microchip, Favorite Activity
+4. Personality Section: Traits with intensity sliders, summary, favorite activity
+5. Wellness Section: Wellness score, weight, activity, vaccine status, allergies, mood
+6. Achievements Section: List of achievements with icons
+7. Photos/Videos Section: Facebook-style posts feed
+8. Edit Modals: Bio, Pet Info, Personality, Wellness, Achievements
+9. Photo Options Modal: Take Photo, Choose from Gallery
+10. AsyncStorage persistence for pet-specific data
+
+================================================================================
+STORAGE KEYS USED:
+================================================================================
+- @kasper_profile: Profile data
+- @kasper_pets: Pet list
+- @kasper_active_pet: Active pet ID
+- @kasper_pet_{petId}_personality: Personality data per pet
+- @kasper_pet_{petId}_wellness: Wellness data per pet
+- @kasper_pet_{petId}_achievements: Achievements data per pet
+
+================================================================================
+END OF FILE
+================================================================================
+
+

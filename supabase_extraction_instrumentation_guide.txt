@@ -1,0 +1,225 @@
+SUPABASE EXTRACTION INSTRUMENTATION (SINGLE-FILE GUIDE)
+=====================================================
+
+Goal
+----
+Make your PDF extraction self-improving by logging *why* extraction failed
+(doctor/clinic/date/vitals), so you can add small fixes over time instead of guessing.
+
+This document explains:
+1) What instrumentation is
+2) What data to log
+3) How to store it in a Supabase table
+4) Where to view/analyze it
+5) Why this improves accuracy over time
+
+No copy-paste from ChatGPT required — this is meant to guide what you implement in Cursor.
+
+-----------------------------------------------------
+1) What “instrument your code” means (plain English)
+-----------------------------------------------------
+Instrumentation = adding structured logging around your extractor so you can see:
+
+- What kind of vet report was uploaded
+- Which fields failed to extract
+- What labels appeared that your parser doesn’t understand yet
+- What candidates were found but rejected
+
+You are NOT trying to fix everything up front.
+You are collecting evidence so future fixes are obvious.
+
+-----------------------------------------------------
+2) Why this matters
+-----------------------------------------------------
+Vet reports vary by:
+- Clinic / vendor (CityVet, Vetco, Banfield, VCA, etc.)
+- Label wording (HR vs Pulse, Visit Date vs Date of Service)
+- Layout (header vs table vs inline text)
+
+Rule-based extractors mature by:
+- Seeing real failures
+- Adding 1–2 new patterns per week
+- Gradually covering 80–90% of cases
+
+This is how production document extractors are built in practice.
+
+-----------------------------------------------------
+3) What data you should log (minimum useful set)
+-----------------------------------------------------
+
+A) Header preview
+-----------------
+Purpose:
+- Identify report templates
+- Discover header anchors (e.g., CLINICAL SUMMARY, SOAP, VISIT SUMMARY)
+
+What to log:
+- First ~500–1500 characters of normalized text
+- NOT the entire document
+
+Example:
+"CITYVET - LAS COLINAS CLINICAL SUMMARY RECORD DATE 11-10-2025 ..."
+
+B) Missing fields
+-----------------
+Purpose:
+- See what fails most often
+
+What to log:
+- Array of fields that were null after extraction
+
+Example:
+["clinicName", "doctorName", "visitDate"]
+
+C) Unknown labels near numbers
+------------------------------
+Purpose:
+- Discover new synonyms like PULSE, RESPIRATION, DATE OF SERVICE
+
+Heuristic:
+- Look for patterns like WORD: number
+- If WORD is not in your known label list, log it
+
+What to log:
+- label (uppercase)
+- short snippet (50–100 chars around it)
+
+Example:
+{ "label": "PULSE", "snippet": "PULSE: 80.00 RESPIRATION: 32.00 WEIGHT: 80.00" }
+
+D) Extracted output
+-------------------
+Purpose:
+- Compare old vs new extractor versions
+
+What to log:
+- Your final normalized extraction JSON
+
+E) (Optional) Candidate debug info
+----------------------------------
+Purpose:
+- See why the wrong value won
+
+What to log:
+- Top 2–3 candidates per field
+- value + confidence + source (header / section / fulltext)
+
+-----------------------------------------------------
+4) Supabase table schema
+-----------------------------------------------------
+
+Create ONE table for all debug events.
+
+Suggested table name:
+- extraction_debug_events
+
+Fields:
+- id (uuid, primary key)
+- created_at (timestamp)
+- user_id (optional)
+- pet_id (optional)
+- file_path (optional)
+- extractor_version (string)
+- missing_fields (text[])
+- header_preview (text)
+- unknown_labels (jsonb)
+- extracted (jsonb)
+- candidates (jsonb, optional)
+
+This table is append-only. One row = one PDF parse attempt.
+
+-----------------------------------------------------
+5) Where this code lives
+-----------------------------------------------------
+
+Location:
+- Supabase Edge Function: parse-clinical-summary
+
+When to log:
+- AFTER text normalization
+- AFTER extraction is complete
+- BEFORE returning the response
+
+You are logging outcomes, not raw input.
+
+-----------------------------------------------------
+6) Where you view the data
+-----------------------------------------------------
+
+A) Supabase Dashboard (UI)
+-------------------------
+- Go to Table Editor
+- Open extraction_debug_events
+- Each row = one uploaded PDF
+
+Good for:
+- Inspecting individual failures
+- Viewing header previews
+
+B) Supabase SQL Editor (analysis)
+--------------------------------
+
+Common questions you’ll ask:
+
+1) Which fields fail most?
+   → Query missing_fields frequency
+
+2) What new labels are appearing?
+   → Aggregate unknown_labels.label
+
+3) Which templates fail clinic extraction?
+   → Filter rows where clinicName is missing and inspect header_preview
+
+You do NOT need a separate analytics tool early on.
+
+-----------------------------------------------------
+7) Privacy & safety rules (important)
+-----------------------------------------------------
+
+DO:
+- Store only short snippets
+- Prefer header area over body
+- Strip emails and phone numbers if easy
+
+DO NOT:
+- Store full PDF text
+- Store entire medical notes
+- Store free-text diagnosis sections
+
+Think of this table as “debug breadcrumbs”, not storage.
+
+-----------------------------------------------------
+8) How this improves accuracy over time
+-----------------------------------------------------
+
+After ~20–30 uploads, patterns emerge:
+- “Pulse” appears often → add HR synonym
+- “Date of Service” appears often → add date regex
+- “Provider” appears often → add doctor label
+- Clinic is always first header line → strengthen heuristic
+
+Each fix is small.
+Accuracy compounds quickly.
+
+-----------------------------------------------------
+9) What this is NOT
+-----------------------------------------------------
+- Not machine learning
+- Not OCR improvement
+- Not vendor-specific hardcoding
+
+It’s structured feedback for a rule-based extractor.
+
+-----------------------------------------------------
+10) Final takeaway
+-----------------------------------------------------
+
+Instrumentation lets your extractor:
+- Fail visibly
+- Teach you why it failed
+- Improve with minimal effort
+
+This is the difference between a brittle parser
+and one that gets better every week.
+
+End of file.
