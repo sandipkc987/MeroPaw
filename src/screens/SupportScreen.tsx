@@ -5,9 +5,11 @@ import { SPACING, TYPOGRAPHY } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import ScreenHeader from "@src/components/ScreenHeader";
 import { Ionicons } from "@expo/vector-icons";
+import { useNavigation } from "@src/contexts/NavigationContext";
 
 export default function SupportScreen() {
   const { colors } = useTheme();
+  const { goBack, canGoBack, setActiveScreen, setActiveTab } = useNavigation();
   function handleHelpCenter() {
     Alert.alert("Help Center", "Browse FAQs and helpful guides", [
       { text: "Cancel", style: "cancel" },
@@ -34,7 +36,18 @@ export default function SupportScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Support" />
+      <ScreenHeader
+        title=""
+        variant="stacked"
+        onBackPress={() => {
+          if (canGoBack) {
+            goBack();
+            return;
+          }
+          setActiveScreen(null);
+          setActiveTab("profile");
+        }}
+      />
       <ScrollView 
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}

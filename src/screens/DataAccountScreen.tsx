@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Switch, Pressable, StyleSheet, Alert } from "react-native";
+import { View, Text, ScrollView, Pressable, StyleSheet, Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Card, Row, Divider, SectionTitle } from "@src/components/UI";
+import { Card, Row, Divider, SectionTitle, Toggle } from "@src/components/UI";
 import { SPACING } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import ScreenHeader from "@src/components/ScreenHeader";
+import { useNavigation } from "@src/contexts/NavigationContext";
 
 const SETTINGS_KEY = "@kasper_settings";
 
 export default function DataAccountScreen() {
   const { colors } = useTheme();
+  const { goBack, canGoBack, setActiveScreen, setActiveTab } = useNavigation();
   const [cloudSync, setCloudSync] = useState(true);
 
   useEffect(() => {
@@ -68,7 +70,17 @@ export default function DataAccountScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Data & Account" />
+      <ScreenHeader
+        title="Data & Account"
+        onBackPress={() => {
+          if (canGoBack) {
+            goBack();
+            return;
+          }
+          setActiveScreen(null);
+          setActiveTab("profile");
+        }}
+      />
       <ScrollView 
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
@@ -80,11 +92,9 @@ export default function DataAccountScreen() {
             label="Cloud Backup & Sync" 
             hint="Keep data synced across devices" 
             control={
-              <Switch 
-                value={cloudSync} 
-                onValueChange={setCloudSync} 
-                trackColor={{ false: colors.borderLight, true: colors.accent }} 
-                thumbColor={colors.white} 
+              <Toggle
+                value={cloudSync}
+                onValueChange={setCloudSync}
               />
             } 
           />

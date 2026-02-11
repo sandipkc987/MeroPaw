@@ -1,12 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, Modal, Alert, Switch, Platform, ActivityIndicator } from "react-native";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { View, Text, ScrollView, TouchableOpacity, Modal, Alert, Platform, ActivityIndicator, RefreshControl } from "react-native";
 import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { timeAgo } from "@src/utils/helpers";
 import { useNavigation } from "@src/contexts/NavigationContext";
 import { usePets } from "@src/contexts/PetContext";
 import { useAuth } from "@src/contexts/AuthContext";
-import { Button, Card, Chip, Input } from "@src/components/UI";
+import { Button, Card, Chip, Input, Toggle } from "@src/components/UI";
+import Select from "@src/components/Select";
 import ActionSheet, { ActionSheetOption } from "@src/components/ActionSheet";
 import EmptyState from "@src/components/EmptyState";
 import { Ionicons } from "@expo/vector-icons";
@@ -14,9 +15,11 @@ import ScreenHeader from "@src/components/ScreenHeader";
 import ReceiptViewer from "@src/components/ReceiptViewer";
 import * as DocumentPicker from "expo-document-picker";
 import Svg, { Circle } from "react-native-svg";
-import { fetchHealthRecords, insertHealthRecord, updateHealthRecord, deleteHealthRecord, uploadHealthAttachment, insertNotification, fetchVetAppointments, insertVetAppointment, updateVetAppointment, deleteVetAppointment, fetchWellnessInputs, upsertWellnessInputs, getHealthAttachmentViewUrl } from "@src/services/supabaseData";
+import { fetchHealthRecords, insertHealthRecord, updateHealthRecord, deleteHealthRecord, uploadHealthAttachment, insertNotification, fetchVetAppointments, insertVetAppointment, updateVetAppointment, deleteVetAppointment, fetchWellnessInputs, upsertWellnessInputs, getHealthAttachmentViewUrl, fetchWeightHistory, upsertWeightHistory } from "@src/services/supabaseData";
 import analyzeClinicalSummary from "@src/services/clinicalSummaryAnalysis";
 import storage from "@src/utils/storage";
+
+const SETTINGS_KEY = "@kasper_settings";
 
 interface PDFAttachment {
   id: string;
@@ -204,10 +207,39 @@ const HealthCard = ({
 
 // ---------- Wellness Score Helpers ----------
 const clamp = (n: number, min = 0, max = 100) => Math.max(min, Math.min(max, n));
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+const WEIGHT_BASELINE_WINDOW_DAYS = 60;
+const WEIGHT_RECENCY_WINDOW_DAYS = 60;
+const WEIGHT_ALERT_RECENT_DAYS = 14;
+
+const daysBetween = (dateA: string | Date, dateB: string | Date) => {
+  const a = new Date(dateA).getTime();
+  const b = new Date(dateB).getTime();
+  if (Number.isNaN(a) || Number.isNaN(b)) return Number.POSITIVE_INFINITY;
+  return Math.abs(a - b) / MS_PER_DAY;
+};
+
+const median = (values: number[]) => {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return sorted[mid];
+};
+
+const normalizePercent = (value: number) => {
+  if (!Number.isFinite(value)) return 0;
+  if (value <= 1) return clamp(value * 100, 0, 100);
+  return clamp(value, 0, 100);
+};
 
 type PreventiveCare = {
   vaccinesUpToDate: boolean;
   parasiteControlCurrent: boolean;
+  vaccinesDueDate?: string;
+  parasiteControlDueDate?: string;
 };
 
 type MedicalHistory = {
@@ -217,8 +249,9 @@ type MedicalHistory = {
 };
 
 type WeightStatus = {
-  lastRecordedMonthsAgo: number;
+  lastRecordedDaysAgo: number;
   percentChange: number;
+  hasBaseline: boolean;
 };
 
 type WeightEntry = {
@@ -228,32 +261,52 @@ type WeightEntry = {
 };
 
 const scorePreventive = (p: PreventiveCare) => {
-  let score = 0;
-  score += p.vaccinesUpToDate ? 35 : 0;
-  score += p.parasiteControlCurrent ? 15 : 0;
-  return clamp(score, 0, 50);
+  const now = new Date();
+  const decayOverdue = (dueDate?: string, maxPoints = 0) => {
+    if (!dueDate) return null;
+    const due = new Date(dueDate);
+    if (Number.isNaN(due.getTime())) return null;
+    const daysOverdue = (now.getTime() - due.getTime()) / MS_PER_DAY;
+    if (daysOverdue <= 0) return maxPoints;
+    const decayWindowDays = 90;
+    return clamp(maxPoints * (1 - daysOverdue / decayWindowDays), 0, maxPoints);
+  };
+
+  let vaccinesScore = p.vaccinesUpToDate ? 35 : 0;
+  const vaccinesDueScore = decayOverdue(p.vaccinesDueDate, 35);
+  if (vaccinesDueScore != null) vaccinesScore = vaccinesDueScore;
+
+  let parasiteScore = p.parasiteControlCurrent ? 15 : 0;
+  const parasiteDueScore = decayOverdue(p.parasiteControlDueDate, 15);
+  if (parasiteDueScore != null) parasiteScore = parasiteDueScore;
+
+  return clamp(vaccinesScore + parasiteScore, 0, 50);
 };
 
 const scoreMedical = (m: MedicalHistory) => {
   let score = 30 - Math.min(m.chronicConditionsCount * 5, 15);
-  const compliancePenalty = clamp(10 - m.medicationCompliance / 10, 0, 10);
+  const compliancePct = normalizePercent(m.medicationCompliance);
+  const compliancePenalty = clamp((100 - compliancePct) / 10, 0, 10);
   score -= compliancePenalty;
-  score -= Math.min(m.recentSymptomsLogged, 5);
+  const symptomPenalty = clamp(Math.max(m.recentSymptomsLogged - 1, 0), 0, 5);
+  score -= symptomPenalty;
   return clamp(score, 0, 30);
 };
 
 const scoreWeight = (w: WeightStatus) => {
-  let score = 0;
-  if (w.lastRecordedMonthsAgo <= 3) score += 10;
-  else if (w.lastRecordedMonthsAgo <= 6) score += 6;
-  else if (w.lastRecordedMonthsAgo <= 12) score += 3;
+  const recency = Number.isFinite(w.lastRecordedDaysAgo)
+    ? clamp(10 * (1 - w.lastRecordedDaysAgo / WEIGHT_RECENCY_WINDOW_DAYS), 0, 10)
+    : 0;
+  if (!w.hasBaseline) return clamp(recency, 0, 20);
 
   const pct = Math.abs(w.percentChange);
-  if (pct < 5) score += 10;
-  else if (pct < 10) score += 6;
-  else if (pct < 15) score += 2;
+  let stability = 0;
+  if (pct < 3) stability = 10;
+  else if (pct < 6) stability = 8;
+  else if (pct < 10) stability = 5;
+  else if (pct < 15) stability = 2;
 
-  return clamp(score, 0, 20);
+  return clamp(recency + stability, 0, 20);
 };
 
 const ProgressBar = ({ value, max }: { value: number; max: number }) => {
@@ -305,11 +358,9 @@ const ToggleRow = ({
       }}
     >
       <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{label}</Text>
-      <Switch
+      <Toggle
         value={value}
         onValueChange={onChange}
-        trackColor={{ false: colors.bgSecondary, true: colors.accent + "55" }}
-        thumbColor={value ? colors.accent : colors.white}
       />
     </View>
   );
@@ -408,7 +459,8 @@ const AddHealthRecordModal = ({
   const [title, setTitle] = useState("");
   const [type, setType] = useState<HealthRecord["type"]>("checkup");
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
-  const [vet, setVet] = useState("");
+  const [vetName, setVetName] = useState("");
+  const [clinicName, setClinicName] = useState("");
   const [notes, setNotes] = useState("");
   const [pdfs, setPdfs] = useState<PDFAttachment[]>([]);
   const [isSaving, setIsSaving] = useState(false);
@@ -418,6 +470,17 @@ const AddHealthRecordModal = ({
   const [autoPickDone, setAutoPickDone] = useState(false);
   const isEdit = !!initialRecord;
   const lastAnalyzedRef = useRef<string | null>(null);
+
+  const formatLocalDate = (value: string) => {
+    const trimmed = value.trim();
+    const dateOnlyMatch = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
+    const parsed = new Date(dateOnlyMatch ? `${trimmed}T00:00:00` : trimmed);
+    if (Number.isNaN(parsed.getTime())) return "";
+    const yyyy = parsed.getFullYear();
+    const mm = String(parsed.getMonth() + 1).padStart(2, "0");
+    const dd = String(parsed.getDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
 
   const pickPDF = async () => {
     try {
@@ -453,11 +516,12 @@ const AddHealthRecordModal = ({
     }
     try {
       setIsSaving(true);
+      const vetLabel = [vetName.trim(), clinicName.trim()].filter(Boolean).join(" · ");
       await onSave({
       type,
       title: title.trim(),
       date,
-      vet: vet.trim() || undefined,
+      vet: vetLabel || undefined,
       notes: notes.trim() || undefined,
       pdfs: pdfs.length > 0 ? pdfs : undefined,
     });
@@ -465,7 +529,8 @@ const AddHealthRecordModal = ({
     setTitle("");
     setType("checkup");
     setDate(new Date().toISOString().split('T')[0]);
-    setVet("");
+    setVetName("");
+    setClinicName("");
     setNotes("");
     setPdfs([]);
     setAnalysisSummary(null);
@@ -479,13 +544,19 @@ const AddHealthRecordModal = ({
     }
   };
 
+  const applyVetLabel = (label: string) => {
+    const parts = label.split("·").map(part => part.trim()).filter(Boolean);
+    setVetName(parts[0] || "");
+    setClinicName(parts.slice(1).join(" · "));
+  };
+
   useEffect(() => {
     if (!visible) return;
     if (initialRecord) {
       setTitle(initialRecord.title || "");
       setType(initialRecord.type || "checkup");
       setDate(initialRecord.date || new Date().toISOString().split('T')[0]);
-      setVet(initialRecord.vet || "");
+      applyVetLabel(initialRecord.vet || "");
       setNotes(initialRecord.notes || "");
       setPdfs(initialRecord.pdfs || []);
       return;
@@ -493,7 +564,8 @@ const AddHealthRecordModal = ({
     setTitle("");
     setType("checkup");
     setDate(new Date().toISOString().split('T')[0]);
-    setVet("");
+    setVetName("");
+    setClinicName("");
     setNotes("");
     setPdfs([]);
   }, [visible, initialRecord]);
@@ -538,16 +610,14 @@ const AddHealthRecordModal = ({
             const extraction = await analyzeClinicalSummary("", text, petId || undefined);
             const visitDate = extraction?.normalized?.visitDate?.value;
             if (visitDate) {
-              const parsed = new Date(visitDate);
-              if (!Number.isNaN(parsed.getTime())) {
-                setDate(parsed.toISOString().split("T")[0]);
-              }
+              const formatted = formatLocalDate(visitDate);
+              if (formatted) setDate(formatted);
             }
             const doctor = extraction?.normalized?.doctorName?.value;
             const clinic = extraction?.normalized?.clinicName?.value;
             const vetLabel = [doctor, clinic].filter(Boolean).join(" · ");
             if (vetLabel) {
-              setVet(vetLabel);
+              applyVetLabel(vetLabel);
             }
             if (visitDate || vetLabel) {
               setAnalysisSummary("Auto-filled visit date and vet details from this PDF.");
@@ -592,16 +662,14 @@ const AddHealthRecordModal = ({
         const extraction = await analyzeClinicalSummary(filePath, undefined, petId || undefined);
         const visitDate = extraction?.normalized?.visitDate?.value;
         if (visitDate) {
-          const parsed = new Date(visitDate);
-          if (!Number.isNaN(parsed.getTime())) {
-            setDate(parsed.toISOString().split("T")[0]);
-          }
+          const formatted = formatLocalDate(visitDate);
+          if (formatted) setDate(formatted);
         }
         const doctor = extraction?.normalized?.doctorName?.value;
         const clinic = extraction?.normalized?.clinicName?.value;
         const vetLabel = [doctor, clinic].filter(Boolean).join(" · ");
         if (vetLabel) {
-          setVet(vetLabel);
+          applyVetLabel(vetLabel);
         }
         if (visitDate || vetLabel) {
           setAnalysisSummary("Auto-filled visit date and vet details from this PDF.");
@@ -627,7 +695,7 @@ const AddHealthRecordModal = ({
     };
 
     runAnalysis();
-  }, [visible, pdfs, userId, petId, vet]);
+  }, [visible, pdfs, userId, petId]);
 
   const typeOptions: { label: string; value: HealthRecord["type"]; icon: string }[] = [
     { label: "Vaccination", value: "vaccination", icon: "medical" },
@@ -636,6 +704,10 @@ const AddHealthRecordModal = ({
     { label: "Grooming", value: "grooming", icon: "cut" },
     { label: "Other", value: "other", icon: "document-text" },
   ];
+  const typeSelectOptions = typeOptions.map(option => ({
+    label: option.label,
+    value: option.value,
+  }));
 
   return (
     <Modal visible={visible} transparent animationType="fade">
@@ -654,9 +726,21 @@ const AddHealthRecordModal = ({
           paddingTop: SPACING.lg,
           paddingHorizontal: SPACING.lg,
           paddingBottom: SPACING.xl,
-          maxHeight: "85%"
+          maxHeight: "88%",
+          borderWidth: 1,
+          borderColor: colors.borderLight,
+          overflow: "hidden",
+          ...SHADOWS.lg
         }}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING.lg }}>
+          <View style={{ 
+            flexDirection: "row", 
+            justifyContent: "space-between", 
+            alignItems: "center", 
+            marginBottom: SPACING.md,
+            paddingBottom: SPACING.md,
+            borderBottomWidth: 1,
+            borderBottomColor: colors.borderLight
+          }}>
             <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
               {isEdit ? "Edit Health Record" : "Add Health Record"}
             </Text>
@@ -665,14 +749,41 @@ const AddHealthRecordModal = ({
             </TouchableOpacity>
           </View>
 
-          <ScrollView showsVerticalScrollIndicator={false}>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingTop: SPACING.sm }}
+          >
             <View>
-              <View style={{ marginBottom: SPACING.md }}>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
-                  Upload Clinical Summary
+              <View style={{ marginBottom: SPACING.md, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>
+                  Record type
                 </Text>
-                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.md }}>
-                  Upload a PDF so we can auto-fill the visit date and vet details.
+                <View style={{ position: "relative" }}>
+                  <Select
+                    value={type}
+                    onChange={(v) => setType(v as HealthRecord["type"])}
+                    options={typeSelectOptions}
+                    modalTitle="Record type"
+                    modalIcon="list-outline"
+                    width={170}
+                  />
+                  <View
+                    pointerEvents="none"
+                    style={{
+                      position: "absolute",
+                      right: 10,
+                      top: "50%",
+                      transform: [{ translateY: -8 }],
+                    }}
+                  >
+                    <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
+                  </View>
+                </View>
+              </View>
+
+              <View style={{ marginBottom: SPACING.md }}>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
+                  Upload clinical summary (optional)
                 </Text>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING.sm }}>
                   <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text }}>
@@ -780,47 +891,10 @@ const AddHealthRecordModal = ({
               </View>
 
               <View style={{ marginBottom: SPACING.md }}>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Type
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
+                  Visit title
                 </Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={{ flexDirection: "row" }}>
-                    {typeOptions.map((option) => (
-                      <TouchableOpacity
-                        key={option.value}
-                        onPress={() => setType(option.value)}
-                        style={{
-                          flexDirection: "row",
-                          alignItems: "center",
-                          paddingVertical: SPACING.sm,
-                          paddingHorizontal: SPACING.md,
-                          backgroundColor: type === option.value ? colors.accent : colors.bgSecondary,
-                          borderRadius: RADIUS.md,
-                          marginRight: SPACING.sm,
-                        }}
-                      >
-                        <Ionicons
-                          name={option.icon as any}
-                          size={18}
-                          color={type === option.value ? colors.white : colors.textMuted}
-                          style={{ marginRight: SPACING.xs }}
-                        />
-                        <Text style={{
-                          ...TYPOGRAPHY.sm,
-                          color: type === option.value ? colors.white : colors.text,
-                          fontWeight: type === option.value ? "600" : "500"
-                        }}>
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </ScrollView>
-              </View>
-
-              <View style={{ marginBottom: SPACING.md }}>
                 <Input
-                  label="Visit title"
                   value={title}
                   onChangeText={setTitle}
                   placeholder="Annual checkup"
@@ -828,8 +902,13 @@ const AddHealthRecordModal = ({
               </View>
 
               <View style={{ marginBottom: SPACING.md }}>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>
+                  Visit date
+                </Text>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
+                  Auto-filled from receipt
+                </Text>
                 <Input
-                  label="Visit date"
                   value={date}
                   onChangeText={setDate}
                   placeholder="YYYY-MM-DD"
@@ -837,17 +916,32 @@ const AddHealthRecordModal = ({
               </View>
 
               <View style={{ marginBottom: SPACING.md }}>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
+                  Veterinarian
+                </Text>
                 <Input
-                  label="Veterinarian / Clinic"
-                  value={vet}
-                  onChangeText={setVet}
-                  placeholder="Dr. Smith · CityVet"
+                  value={vetName}
+                  onChangeText={setVetName}
+                  placeholder="Dr. Smith"
                 />
               </View>
 
               <View style={{ marginBottom: SPACING.md }}>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
+                  Clinic
+                </Text>
                 <Input
-                  label="Notes"
+                  value={clinicName}
+                  onChangeText={setClinicName}
+                  placeholder="CityVet"
+                />
+              </View>
+
+              <View style={{ marginBottom: SPACING.md }}>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
+                  Additional notes (optional)
+                </Text>
+                <Input
                   value={notes}
                   onChangeText={setNotes}
                   placeholder="Add notes about the visit"
@@ -858,7 +952,13 @@ const AddHealthRecordModal = ({
             </View>
           </ScrollView>
 
-          <View style={{ flexDirection: "row", marginTop: SPACING.lg }}>
+          <View style={{ 
+            flexDirection: "row", 
+            marginTop: SPACING.lg,
+            paddingTop: SPACING.md,
+            borderTopWidth: 1,
+            borderTopColor: colors.borderLight
+          }}>
             <Button
               title="Cancel"
               onPress={onClose}
@@ -1511,100 +1611,188 @@ const ManualHealthStatusModal = ({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSave: (payload: { weight?: string; heartRate?: string; respiratoryRate?: string; attitude?: string }) => void;
-  initialValues?: { weight?: string; heartRate?: string; respiratoryRate?: string; attitude?: string };
+  onSave: (payload: { weight?: { value: number; unit?: string } | string; heartRate?: string; respiratoryRate?: string; attitude?: string }) => void;
+  initialValues?: { weight?: { value: number; unit?: string } | string; heartRate?: string; respiratoryRate?: string; attitude?: string };
 }) => {
   const { colors } = useTheme();
-  const [weight, setWeight] = useState(initialValues?.weight || "");
+  const [weight, setWeight] = useState("");
+  const [weightUnit, setWeightUnit] = useState<"lb" | "kg">("lb");
   const [heartRate, setHeartRate] = useState(initialValues?.heartRate || "");
   const [respRate, setRespRate] = useState(initialValues?.respiratoryRate || "");
   const [attitude, setAttitude] = useState(initialValues?.attitude || "");
+  const [weightError, setWeightError] = useState("");
+  const [heartRateError, setHeartRateError] = useState("");
+  const [respRateError, setRespRateError] = useState("");
+
+  const parseWeight = (value?: { value: number; unit?: string } | string) => {
+    if (!value) {
+      setWeight("");
+      setWeightUnit("lb");
+      return;
+    }
+    if (typeof value === "object" && "value" in value) {
+      setWeight(String(value.value ?? ""));
+      setWeightUnit(value.unit === "kg" ? "kg" : "lb");
+      return;
+    }
+    setWeight(String(value));
+  };
 
   useEffect(() => {
     if (!visible) return;
-    setWeight(initialValues?.weight || "");
+    parseWeight(initialValues?.weight);
     setHeartRate(initialValues?.heartRate || "");
     setRespRate(initialValues?.respiratoryRate || "");
     setAttitude(initialValues?.attitude || "");
+    setWeightError("");
+    setHeartRateError("");
+    setRespRateError("");
   }, [visible, initialValues]);
 
   return (
-    <Modal visible={visible} transparent animationType="slide">
-      <View style={{ flex: 1, backgroundColor: colors.black + "80", justifyContent: "flex-end" }}>
-        <View style={{ 
+    <Modal visible={visible} transparent animationType="fade">
+      <View style={{ flex: 1, backgroundColor: colors.black + "80", justifyContent: "center", padding: SPACING.lg }}>
+        <View style={{
           backgroundColor: colors.card,
-          borderTopLeftRadius: RADIUS.xl,
-          borderTopRightRadius: RADIUS.xl,
+          borderRadius: RADIUS.xl,
           paddingTop: SPACING.lg,
           paddingHorizontal: SPACING.lg,
           paddingBottom: SPACING.xl,
-          maxHeight: "90%"
+          maxHeight: "90%",
+          borderWidth: 1,
+          borderColor: colors.borderLight,
+          ...SHADOWS.lg
         }}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING.lg }}>
-            <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
-              Update Health Status
-            </Text>
+          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING.xs }}>
+            <View>
+              <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text, letterSpacing: -0.2 }}>
+                Update health status
+              </Text>
+              <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: 2 }}>
+                Enter current vitals
+              </Text>
+            </View>
             <TouchableOpacity onPress={onClose}>
-              <Ionicons name="close" size={24} color={colors.textMuted} />
+              <Ionicons name="close" size={22} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
+          <View style={{ height: 1, backgroundColor: colors.borderLight, marginBottom: SPACING.md }} />
 
           <ScrollView showsVerticalScrollIndicator={false}>
             <View style={{ gap: SPACING.md }}>
-              <View>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Weight (lb)
-                </Text>
-                <Input
-                  value={weight}
-                  onChangeText={setWeight}
-                  placeholder="e.g., 25.4"
-                  keyboardType="numeric"
-                />
+              <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.textMuted }}>
+                Vitals
+              </Text>
+
+              <View style={{
+                padding: SPACING.sm,
+                borderRadius: RADIUS.lg,
+                borderWidth: 1,
+                borderColor: colors.borderLight,
+                backgroundColor: colors.cardSecondary,
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "space-between"
+              }}>
+                <Text style={{ ...TYPOGRAPHY.base, color: colors.text }}>Weight</Text>
+                <View style={{ flexDirection: "row", borderRadius: RADIUS.pill, overflow: "hidden", borderWidth: 1, borderColor: colors.borderLight }}>
+                  {(["lb", "kg"] as const).map((unit) => (
+                    <TouchableOpacity
+                      key={unit}
+                      onPress={() => setWeightUnit(unit)}
+                      style={{
+                        paddingVertical: 6,
+                        paddingHorizontal: 14,
+                        backgroundColor: weightUnit === unit ? colors.accent : "transparent",
+                      }}
+                    >
+                      <Text style={{ ...TYPOGRAPHY.sm, color: weightUnit === unit ? colors.white : colors.textMuted, fontWeight: "600" }}>
+                        {unit}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
-              <View>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Heart Rate (bpm)
+
+              <Input
+                value={weight}
+                onChangeText={setWeight}
+                placeholder={`e.g., 25.4 ${weightUnit}`}
+                keyboardType="decimal-pad"
+              />
+              {weightError ? (
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.danger, marginTop: SPACING.xs }}>
+                  {weightError}
                 </Text>
-                <Input
-                  value={heartRate}
-                  onChangeText={setHeartRate}
-                  placeholder="e.g., 140"
-                  keyboardType="numeric"
-                />
+              ) : null}
+
+              <View style={{ flexDirection: "row", gap: SPACING.sm, alignItems: "flex-start" }}>
+                <View style={{ flex: 1 }}>
+                  <View style={{ minHeight: 34, justifyContent: "flex-end" }}>
+                    <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text, fontSize: 13 }} numberOfLines={1} ellipsizeMode="tail">
+                      Heart rate (bpm)
+                    </Text>
+                  </View>
+                  <Input
+                    value={heartRate}
+                    onChangeText={setHeartRate}
+                    placeholder="140"
+                    keyboardType="number-pad"
+                  />
+                  {heartRateError ? (
+                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.danger, marginTop: SPACING.xs }}>
+                      {heartRateError}
+                    </Text>
+                  ) : null}
+                </View>
+                <View style={{ flex: 1 }}>
+                  <View style={{ minHeight: 34, justifyContent: "flex-end" }}>
+                    <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text, fontSize: 13 }} numberOfLines={1} ellipsizeMode="tail">
+                      Respiratory rate
+                    </Text>
+                  </View>
+                  <Input
+                    value={respRate}
+                    onChangeText={setRespRate}
+                    placeholder="35"
+                    keyboardType="number-pad"
+                  />
+                  {respRateError ? (
+                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.danger, marginTop: SPACING.xs }}>
+                      {respRateError}
+                    </Text>
+                  ) : null}
+                </View>
               </View>
+
               <View>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Respiratory Rate (breaths/min)
+                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                  Mental status
                 </Text>
-                <Input
-                  value={respRate}
-                  onChangeText={setRespRate}
-                  placeholder="e.g., 35"
-                  keyboardType="numeric"
-                />
-              </View>
-              <View>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Attitude
-                </Text>
-                <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-                  {["BAR", "QAR", "L", "D"].map((code) => (
+                <View style={{
+                  flexDirection: "row",
+                  borderRadius: RADIUS.md,
+                  overflow: "hidden",
+                  borderWidth: 1,
+                  borderColor: colors.borderLight,
+                  backgroundColor: colors.cardSecondary,
+                }}>
+                  {["BAR", "QAR", "L", "D"].map((code, idx) => (
                     <TouchableOpacity
                       key={code}
                       onPress={() => setAttitude(code)}
                       style={{
+                        flex: 1,
                         paddingVertical: SPACING.sm,
-                        paddingHorizontal: SPACING.md,
-                        backgroundColor: attitude === code ? colors.accent : colors.bgSecondary,
-                        borderRadius: RADIUS.md,
-                        marginRight: SPACING.sm,
-                        marginBottom: SPACING.sm,
+                        alignItems: "center",
+                        borderRightWidth: idx === 3 ? 0 : 1,
+                        borderRightColor: colors.borderLight,
+                        backgroundColor: attitude === code ? colors.accent : "transparent",
                       }}
                     >
                       <Text style={{
                         ...TYPOGRAPHY.sm,
-                        color: attitude === code ? colors.white : colors.text,
+                        color: attitude === code ? colors.white : colors.textMuted,
                         fontWeight: attitude === code ? "600" : "500"
                       }}>
                         {code}
@@ -1612,14 +1800,34 @@ const ManualHealthStatusModal = ({
                     </TouchableOpacity>
                   ))}
                 </View>
+                <View style={{ flexDirection: "row", alignItems: "center", marginTop: SPACING.xs }}>
+                  <Ionicons name="information-circle-outline" size={16} color={colors.textMuted} />
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginLeft: SPACING.xs }}>
+                    What do these mean?
+                  </Text>
+                </View>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: SPACING.xs }}>
+                  BAR: Bright, Alert, Responsive
+                </Text>
                 <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>
-                  BAR = Bright Alert Responsive · QAR = Quiet Alert Responsive
+                  QAR: Quiet, Alert, Responsive
+                </Text>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>
+                  L: Lethargic
+                </Text>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>
+                  D: Depressed
                 </Text>
               </View>
             </View>
           </ScrollView>
 
-          <View style={{ flexDirection: "row", marginTop: SPACING.lg }}>
+          <View style={{ height: 1, backgroundColor: colors.borderLight, marginTop: SPACING.lg }} />
+          <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, textAlign: "center", marginTop: SPACING.sm }}>
+            You can update this later.
+          </Text>
+
+          <View style={{ flexDirection: "row", marginTop: SPACING.md }}>
             <Button
               title="Cancel"
               onPress={onClose}
@@ -1628,7 +1836,20 @@ const ManualHealthStatusModal = ({
             />
             <Button
               title="Save"
-              onPress={() => onSave({ weight, heartRate, respiratoryRate: respRate, attitude })}
+              onPress={() => {
+                const isNumber = (val: string) => val.trim() === "" || !Number.isNaN(Number(val));
+                const nextWeightError = isNumber(weight) ? "" : "Enter a valid weight";
+                const nextHeartError = isNumber(heartRate) ? "" : "Enter a valid heart rate";
+                const nextRespError = isNumber(respRate) ? "" : "Enter a valid respiratory rate";
+                setWeightError(nextWeightError);
+                setHeartRateError(nextHeartError);
+                setRespRateError(nextRespError);
+                if (nextWeightError || nextHeartError || nextRespError) return;
+                const parsedWeight = weight.trim() !== ""
+                  ? { value: Number(weight), unit: weightUnit }
+                  : undefined;
+                onSave({ weight: parsedWeight, heartRate, respiratoryRate: respRate, attitude });
+              }}
               style={{ flex: 1, marginLeft: SPACING.sm }}
             />
           </View>
@@ -1656,6 +1877,7 @@ export default function HealthScreen() {
   const [actionSheetOptions, setActionSheetOptions] = useState<ActionSheetOption[]>([]);
   const [actionSheetTitle, setActionSheetTitle] = useState<string | undefined>(undefined);
   const [actionSheetVariant, setActionSheetVariant] = useState<"list" | "quick">("list");
+  const [actionSheetFooter, setActionSheetFooter] = useState<string | undefined>(undefined);
   const [highlightedRecordId, setHighlightedRecordId] = useState<string | null>(null);
   const [pendingRecordId, setPendingRecordId] = useState<string | null>(null);
   const [showVetVisitModal, setShowVetVisitModal] = useState(false);
@@ -1665,13 +1887,13 @@ export default function HealthScreen() {
   const [manualStatus, setManualStatus] = useState<{
     updatedAt: string;
     source?: "manual" | "auto";
-    weight?: string;
+    weight?: { value: number; unit?: string } | string;
     heartRate?: string;
     respiratoryRate?: string;
     attitude?: string;
   } | null>(null);
   const [manualStatusPrefill, setManualStatusPrefill] = useState<{
-    weight?: string;
+    weight?: { value: number; unit?: string } | string;
     heartRate?: string;
     respiratoryRate?: string;
     attitude?: string;
@@ -1700,6 +1922,21 @@ export default function HealthScreen() {
   });
   const [weightHistory, setWeightHistory] = useState<WeightEntry[]>([]);
   const [activeWellnessTab, setActiveWellnessTab] = useState<"preventive" | "medical" | "weight">("preventive");
+  const [wellnessHydrated, setWellnessHydrated] = useState(false);
+  const wellnessLoadRef = useRef({ inputs: false, weight: false });
+  const wellnessInitialScoreRef = useRef<number | null>(null);
+  const wellnessScoreSeededRef = useRef(false);
+  const wellnessUserChangedRef = useRef(false);
+  const markWellnessUserChanged = useCallback(() => {
+    wellnessUserChangedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    wellnessLoadRef.current = { inputs: false, weight: false };
+    wellnessInitialScoreRef.current = null;
+    wellnessScoreSeededRef.current = false;
+    setWellnessHydrated(false);
+  }, [user?.id, activePetId]);
 
   useEffect(() => {
     if (!user?.id || !activePetId) return;
@@ -1708,6 +1945,11 @@ export default function HealthScreen() {
         const remote = await fetchWellnessInputs(user.id, activePetId);
         if (remote?.preventive) setPreventive(remote.preventive);
         if (remote?.medical) setMedical(remote.medical);
+        if (typeof remote?.score === "number") {
+          wellnessInitialScoreRef.current = remote.score;
+        }
+        wellnessLoadRef.current.inputs = true;
+        setWellnessHydrated(wellnessLoadRef.current.inputs && wellnessLoadRef.current.weight);
       } catch (error) {
         console.error("HealthScreen: Failed to load wellness inputs:", error);
       }
@@ -1715,37 +1957,70 @@ export default function HealthScreen() {
     loadWellnessInputs();
   }, [user?.id, activePetId]);
 
-  useEffect(() => {
-    if (!user?.id || !activePetId) return;
-    const timer = setTimeout(() => {
-      upsertWellnessInputs(user.id, activePetId, { preventive, medical }).catch((error) => {
-        console.error("HealthScreen: Failed to save wellness inputs:", error);
-      });
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [user?.id, activePetId, preventive, medical]);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  useEffect(() => {
-    if (!user?.id || !activePetId) {
+  const loadWeightHistory = useCallback(async () => {
+    if (!activePetId) {
       setWeightHistory([]);
       return;
     }
-    const key = `@kasper_weight_history_${user.id}_${activePetId}`;
-    const loadWeightHistory = async () => {
-      const raw = await storage.getItem(key);
-      if (!raw) {
-        setWeightHistory([]);
-        return;
-      }
+    const key = user?.id ? `@kasper_weight_history_${user.id}_${activePetId}` : "";
+    let remoteEntries: WeightEntry[] = [];
+    if (user?.id) {
       try {
-        const parsed = JSON.parse(raw);
-        setWeightHistory(Array.isArray(parsed) ? parsed : []);
-      } catch {
-        setWeightHistory([]);
+        remoteEntries = await fetchWeightHistory(user.id, activePetId);
+      } catch (error) {
+        console.error("HealthScreen: Failed to load weight history", error);
       }
+    }
+
+    let localEntries: WeightEntry[] = [];
+    if (key) {
+      const raw = await storage.getItem(key);
+      if (raw) {
+        try {
+          const parsed = JSON.parse(raw);
+          localEntries = Array.isArray(parsed) ? parsed : [];
+        } catch {
+          localEntries = [];
+        }
+      }
+    }
+
+    const merged = normalizeWeightEntries([...remoteEntries, ...localEntries]);
+    setWeightHistory(merged);
+
+    wellnessLoadRef.current.weight = true;
+    setWellnessHydrated(wellnessLoadRef.current.inputs && wellnessLoadRef.current.weight);
+
+    if (user?.id && merged.length > remoteEntries.length) {
+      upsertWeightHistory(user.id, activePetId, merged).catch((error) => {
+        console.warn("HealthScreen: Failed to sync weight history", error);
+      });
+    }
+  }, [activePetId, user?.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      await loadWeightHistory();
     };
-    loadWeightHistory();
-  }, [user?.id, activePetId]);
+    if (!cancelled) {
+      run();
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [loadWeightHistory]);
+
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      await loadWeightHistory();
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [loadWeightHistory]);
 
   useEffect(() => {
     if (!user?.id || !activePetId) return;
@@ -1847,8 +2122,12 @@ export default function HealthScreen() {
     if (weightHistory.length === 0) {
       return {
         hasHistory: false,
-        lastRecordedMonthsAgo: 999,
+        lastRecordedDaysAgo: 999,
         percentChange: 0,
+        hasBaseline: false,
+        baselineWeight: null as number | null,
+        baselineSampleCount: 0,
+        recentSampleCount: 0,
         lastWeight: null as number | null,
         previousWeight: null as number | null,
         lastDate: null as string | null,
@@ -1861,16 +2140,30 @@ export default function HealthScreen() {
     const previous = sorted[1];
     const now = new Date();
     const latestDate = new Date(latest.date);
-    const monthsAgo = Number.isNaN(latestDate.getTime())
+    const lastRecordedDaysAgo = Number.isNaN(latestDate.getTime())
       ? 999
-      : Math.max(0, Math.round((now.getTime() - latestDate.getTime()) / (1000 * 60 * 60 * 24 * 30)));
-    const percentChange = previous && previous.weight !== 0
-      ? ((latest.weight - previous.weight) / previous.weight) * 100
+      : Math.max(0, Math.round(daysBetween(now, latestDate)));
+
+    const recentWindowStart = new Date(now.getTime() - WEIGHT_BASELINE_WINDOW_DAYS * MS_PER_DAY);
+    const recent = sorted.filter((entry) => {
+      const entryDate = new Date(entry.date);
+      return !Number.isNaN(entryDate.getTime()) && entryDate >= recentWindowStart;
+    });
+    const baselineCandidates = recent.filter((entry, idx) => idx !== 0);
+    const baselineWeight = median(baselineCandidates.map((entry) => entry.weight));
+    const hasBaseline = baselineWeight != null && baselineWeight !== 0;
+    const percentChange = hasBaseline
+      ? ((latest.weight - (baselineWeight as number)) / (baselineWeight as number)) * 100
       : 0;
+
     return {
       hasHistory: true,
-      lastRecordedMonthsAgo: monthsAgo,
+      lastRecordedDaysAgo,
       percentChange,
+      hasBaseline,
+      baselineWeight,
+      baselineSampleCount: baselineCandidates.length,
+      recentSampleCount: recent.length,
       lastWeight: latest.weight,
       previousWeight: previous?.weight ?? null,
       lastDate: latest.date,
@@ -1896,6 +2189,142 @@ export default function HealthScreen() {
   };
   
   const scoreLabel = useMemo(() => getScoreLabel(totalScore), [totalScore, colors]);
+  const displayScore = wellnessHydrated ? totalScore : null;
+  const displayScoreLabel = wellnessHydrated ? scoreLabel : { text: "Loading", color: colors.textMuted };
+
+  useEffect(() => {
+    if (!user?.id || !activePetId) return;
+    if (!wellnessHydrated) return;
+    const timer = setTimeout(() => {
+      upsertWellnessInputs(user.id, activePetId, {
+        preventive,
+        medical,
+        score: totalScore,
+      }).catch((error) => {
+        console.error("HealthScreen: Failed to save wellness inputs:", error);
+      });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [user?.id, activePetId, preventive, medical, totalScore, wellnessHydrated]);
+
+  useEffect(() => {
+    if (!user?.id || !activePetId) return;
+    if (!wellnessHydrated) return;
+    let cancelled = false;
+    const run = async () => {
+      try {
+        const stored = await storage.getItem(SETTINGS_KEY);
+        const settings = stored ? JSON.parse(stored) : {};
+        const weightAlertEnabled = settings.weightAlert !== undefined ? settings.weightAlert : true;
+        const weightThreshold = settings.weightThreshold !== undefined ? settings.weightThreshold : 5;
+        const wellnessUpdatesEnabled = settings.wellnessUpdates !== undefined ? settings.wellnessUpdates : true;
+        const wellnessCadence =
+          settings.wellnessCadence === "monthly" || settings.wellnessCadence === "weekly"
+            ? settings.wellnessCadence
+            : "weekly";
+
+        const weightAlertKey = `@kasper_weight_alert_last_${user.id}_${activePetId}`;
+        const wellnessScoreKey = `@kasper_wellness_score_last_${user.id}_${activePetId}`;
+        const wellnessCadenceKey = `@kasper_wellness_cadence_last_${user.id}_${activePetId}`;
+
+        if (weightAlertEnabled && weightMetrics.hasHistory && weightHistory.length >= 3) {
+          const latestDate = weightMetrics.lastDate;
+          const latestWeight = weightMetrics.lastWeight;
+          const baselineWeight = weightMetrics.baselineWeight;
+          const daysSinceLatest = weightMetrics.lastRecordedDaysAgo;
+          const hasBaseline = weightMetrics.hasBaseline;
+
+          if (latestDate && latestWeight != null && baselineWeight != null && hasBaseline) {
+            if (daysSinceLatest <= WEIGHT_ALERT_RECENT_DAYS) {
+              const lastNotified = await storage.getItem(weightAlertKey);
+              if (!lastNotified || lastNotified !== latestDate) {
+                const pctLatest = Math.abs(((latestWeight - baselineWeight) / baselineWeight) * 100);
+                if (pctLatest >= weightThreshold) {
+                  const now = new Date();
+                  const recentWeights = weightHistory.filter((entry) => {
+                    return daysBetween(now, entry.date) <= WEIGHT_ALERT_RECENT_DAYS;
+                  });
+                  const latestDirection = Math.sign(latestWeight - baselineWeight);
+                  const confirmed = recentWeights.some((entry) => {
+                    if (entry.date === latestDate) return false;
+                    const pct = Math.abs(((entry.weight - baselineWeight) / baselineWeight) * 100);
+                    const direction = Math.sign(entry.weight - baselineWeight);
+                    return pct >= weightThreshold && direction === latestDirection;
+                  });
+
+                  if (confirmed) {
+                    await insertNotification(user.id, {
+                      petId: activePetId,
+                      kind: "health",
+                      title: "Weight change detected",
+                      message: `Weight changed by ${pctLatest.toFixed(1)}% (threshold ±${weightThreshold}%).`,
+                    });
+                  } else {
+                    await insertNotification(user.id, {
+                      petId: activePetId,
+                      kind: "health",
+                      title: "Re-weigh to confirm",
+                      message: "A weight change was detected. Please log another weight to confirm.",
+                    });
+                  }
+                  await storage.setItem(weightAlertKey, latestDate);
+                }
+              }
+            }
+          }
+        }
+
+        if (wellnessUpdatesEnabled) {
+          const now = Date.now();
+          const cadenceMs = wellnessCadence === "monthly"
+            ? 1000 * 60 * 60 * 24 * 30
+            : 1000 * 60 * 60 * 24 * 7;
+          const lastCadenceRaw = await storage.getItem(wellnessCadenceKey);
+          const lastCadenceTs = lastCadenceRaw ? new Date(lastCadenceRaw).getTime() : 0;
+          const cadenceDue = !Number.isFinite(lastCadenceTs) || now - lastCadenceTs >= cadenceMs;
+
+          if (cadenceDue) {
+            await insertNotification(user.id, {
+              petId: activePetId,
+              kind: "health",
+              title: wellnessCadence === "monthly" ? "Monthly wellness summary" : "Weekly wellness summary",
+              message: `Current wellness score: ${totalScore}/100.`,
+            });
+            await storage.setItem(wellnessCadenceKey, new Date(now).toISOString());
+          }
+
+          const lastScoreRaw = await storage.getItem(wellnessScoreKey);
+          if (!wellnessScoreSeededRef.current) {
+            const seedScore = wellnessInitialScoreRef.current ?? totalScore;
+            await storage.setItem(wellnessScoreKey, `${seedScore}`);
+            wellnessScoreSeededRef.current = true;
+          } else if (!lastScoreRaw) {
+            await storage.setItem(wellnessScoreKey, `${totalScore}`);
+          } else if (wellnessUserChangedRef.current) {
+            const lastScore = Number(lastScoreRaw);
+            if (!Number.isNaN(lastScore) && Math.abs(totalScore - lastScore) >= 1) {
+              await insertNotification(user.id, {
+                petId: activePetId,
+                kind: "health",
+                title: "Wellness score updated",
+                message: `Score changed from ${lastScore} to ${totalScore}.`,
+              });
+            }
+            await storage.setItem(wellnessScoreKey, `${totalScore}`);
+            wellnessUserChangedRef.current = false;
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          console.warn("HealthScreen: Failed to evaluate health alerts", error);
+        }
+      }
+    };
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, activePetId, weightHistory, weightMetrics, totalScore]);
 
   const wellnessTabs: { key: "preventive" | "medical" | "weight"; label: string }[] = [
     { key: "preventive", label: "Preventive Care" },
@@ -1960,6 +2389,24 @@ export default function HealthScreen() {
       ? { source: manualStatus.source === "auto" ? "From PDF" : "Manual entry", ts: manualTime }
       : { source: "From PDF", ts: extractedTime };
   }, [manualStatus, latestExtractedRecord]);
+
+  const latestWeightEntry = useMemo(() => {
+    if (!weightHistory.length) return null;
+    return weightHistory[0] || null;
+  }, [weightHistory]);
+
+  const latestWeightTs = useMemo(() => {
+    if (!latestWeightEntry) return null;
+    const ts = new Date(latestWeightEntry.date).getTime();
+    return Number.isFinite(ts) ? ts : null;
+  }, [latestWeightEntry]);
+
+  const healthStatusMeta = useMemo(() => {
+    if (latestWeightTs && (!latestStatusMeta || latestWeightTs > latestStatusMeta.ts)) {
+      return { source: "Weight history", ts: latestWeightTs };
+    }
+    return latestStatusMeta;
+  }, [latestStatusMeta, latestWeightTs]);
 
   useEffect(() => {
     if (!pendingRecordId || healthRecords.length === 0) return;
@@ -2035,7 +2482,9 @@ export default function HealthScreen() {
 
   useEffect(() => {
     if (!manualStatus?.weight) return;
-    const weightValue = Number(manualStatus.weight);
+    const weightValue = typeof manualStatus.weight === "object" && "value" in manualStatus.weight
+      ? Number(manualStatus.weight.value)
+      : Number(manualStatus.weight);
     if (!Number.isFinite(weightValue)) return;
     addWeightEntry({
       weight: weightValue,
@@ -2045,21 +2494,24 @@ export default function HealthScreen() {
   }, [manualStatus]);
 
 
-  const handleSaveManualStatus = async (payload: { weight?: string; heartRate?: string; respiratoryRate?: string; attitude?: string }) => {
+  const handleSaveManualStatus = async (payload: { weight?: { value: number; unit?: string } | string; heartRate?: string; respiratoryRate?: string; attitude?: string }) => {
     if (!user?.id || !activePetId) return;
     const base = latestExtractedStatus || manualStatus || {};
+    const nextWeight = payload.weight ?? (base as any).weight ?? undefined;
     const next = {
       updatedAt: new Date().toISOString(),
       source: "manual" as const,
-      weight: payload.weight?.trim() || (base as any).weight || undefined,
+      weight: nextWeight,
       heartRate: payload.heartRate?.trim() || (base as any).heartRate || undefined,
       respiratoryRate: payload.respiratoryRate?.trim() || (base as any).respiratoryRate || undefined,
       attitude: payload.attitude?.trim() || (base as any).attitude || undefined,
     };
-    const trimmedWeight = payload.weight?.trim();
-    if (trimmedWeight) {
-      const weightValue = Number(trimmedWeight);
+    if (payload.weight) {
+      const weightValue = typeof payload.weight === "object" && "value" in payload.weight
+        ? Number(payload.weight.value)
+        : Number(payload.weight);
       if (Number.isFinite(weightValue)) {
+        markWellnessUserChanged();
         addWeightEntry({ weight: weightValue, date: next.updatedAt, source: "manual" });
       }
     }
@@ -2100,19 +2552,30 @@ export default function HealthScreen() {
     return date.toISOString();
   };
 
+  const normalizeWeightEntries = (entries: WeightEntry[]) => {
+    const next = entries
+      .filter((item) => Number.isFinite(item.weight))
+      .filter((item) => !Number.isNaN(new Date(item.date).getTime()));
+    const deduped = new Map<string, WeightEntry>();
+    next.forEach((item) => {
+      deduped.set(`${item.date}|${item.weight}`, item);
+    });
+    return Array.from(deduped.values()).sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+    );
+  };
+
   const addWeightEntry = (entry: WeightEntry) => {
     setWeightHistory((prev) => {
-      const next = [...prev, entry]
-        .filter((item) => Number.isFinite(item.weight))
-        .filter((item) => !Number.isNaN(new Date(item.date).getTime()));
-      const deduped = new Map<string, WeightEntry>();
-      next.forEach((item) => {
-        deduped.set(`${item.date}|${item.weight}`, item);
-      });
-      return Array.from(deduped.values()).sort(
-        (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-      );
+      return normalizeWeightEntries([...prev, entry]);
     });
+    const isValidEntry =
+      Number.isFinite(entry.weight) && !Number.isNaN(new Date(entry.date).getTime());
+    if (isValidEntry && user?.id && activePetId) {
+      upsertWeightHistory(user.id, activePetId, [entry]).catch((error) => {
+        console.warn("HealthScreen: Failed to sync weight entry", error);
+      });
+    }
   };
 
   const buildMergedStatusFromExtracted = (extracted: any, fallback: any) => {
@@ -2272,6 +2735,7 @@ export default function HealthScreen() {
         if (extractedWeight) {
           const weightValue = Number(extractedWeight);
           if (Number.isFinite(weightValue)) {
+            markWellnessUserChanged();
             addWeightEntry({
               weight: weightValue,
               date: toValidDateIso(recordData.date),
@@ -2408,6 +2872,7 @@ export default function HealthScreen() {
   const openHealthActions = (record: HealthRecord) => {
     setActionSheetVariant("list");
     setActionSheetTitle("Health record");
+    setActionSheetFooter(undefined);
     setActionSheetOptions([
       {
         label: "Edit",
@@ -2447,6 +2912,9 @@ export default function HealthScreen() {
         title="Health"
         actionIcon="paw"
         onActionPress={() => setShowAddModal(true)}
+        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        paddingTop={SPACING.lg}
+        paddingBottom={SPACING.lg}
       />
 
       
@@ -2462,6 +2930,13 @@ export default function HealthScreen() {
         alwaysBounceVertical={false}
         nestedScrollEnabled={true}
         keyboardShouldPersistTaps="handled"
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={handleRefresh}
+            tintColor={colors.textMuted}
+          />
+        }
       >
         {/* Header */}
         <View style={{ 
@@ -2487,17 +2962,17 @@ export default function HealthScreen() {
                   <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
                     Wellness Score
                   </Text>
-                  {latestStatusMeta && (
+                  {healthStatusMeta && (
                     <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 4 }}>
-                      Updated {timeAgo(latestStatusMeta.ts)} ago
+                      Updated {timeAgo(healthStatusMeta.ts)} ago
                     </Text>
                   )}
                   <View style={{ flexDirection: "row", alignItems: "flex-end", marginTop: SPACING.sm }}>
-                    <Text style={{ ...TYPOGRAPHY["3xl"], fontWeight: "800", color: scoreLabel.color }}>
-                      {totalScore}
+                    <Text style={{ ...TYPOGRAPHY["3xl"], fontWeight: "800", color: displayScoreLabel.color }}>
+                      {displayScore ?? "--"}
                     </Text>
                     <Text style={{ ...TYPOGRAPHY.base, color: colors.textMuted, marginLeft: SPACING.sm }}>
-                      {scoreLabel.text}
+                      {displayScoreLabel.text}
                     </Text>
                   </View>
                 </View>
@@ -2514,13 +2989,13 @@ export default function HealthScreen() {
                       strokeLinecap="round"
                       fill="none"
                       strokeDasharray={2 * Math.PI * 52}
-                      strokeDashoffset={2 * Math.PI * 52 * (1 - totalScore / 100)}
+                      strokeDashoffset={2 * Math.PI * 52 * (1 - (displayScore ?? 0) / 100)}
                       transform="rotate(-90 60 60)"
                     />
                   </Svg>
                   <View style={{ position: "absolute", alignItems: "center" }}>
                     <Text style={{ ...TYPOGRAPHY["2xl"], fontWeight: "700", color: colors.text }}>
-                      {totalScore}
+                      {displayScore ?? "--"}
                     </Text>
                     <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>out of 100</Text>
                   </View>
@@ -2535,20 +3010,22 @@ export default function HealthScreen() {
                       Health Status
                     </Text>
                     <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
-                      {latestStatusMeta && (
+                      {healthStatusMeta && (
                         <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>
-                          {latestStatusMeta.source} · {timeAgo(latestStatusMeta.ts)} ago
+                          {healthStatusMeta.source} · {timeAgo(healthStatusMeta.ts)} ago
                         </Text>
                       )}
                       <TouchableOpacity
                         onPress={() => {
                           setActionSheetVariant("quick");
                           setActionSheetTitle("Update health status");
+                          setActionSheetFooter("You can edit your health record later.");
                           setActionSheetOptions([
                             {
                               label: "Upload PDF",
                               icon: "cloud-upload-outline",
                               iconColor: "#7C3AED",
+                              subtitle: "Auto-fill from receipt",
                               onPress: () => {
                                 storage.setItem("@kasper_health_record_start_mode", "upload");
                                 setShowAddModal(true);
@@ -2558,6 +3035,7 @@ export default function HealthScreen() {
                               label: "Add manually",
                               icon: "create-outline",
                               iconColor: "#64748B",
+                              subtitle: "Enter details yourself",
                               onPress: () => setShowManualStatusModal(true),
                             },
                           ]);
@@ -2581,7 +3059,8 @@ export default function HealthScreen() {
                   <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
                     <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Weight</Text>
                     <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                      {getStatusValue(latestExtractedStatus, "weight")} {getStatusUnit(latestExtractedStatus, "weight")}
+                      {latestWeightEntry?.weight ?? getStatusValue(latestExtractedStatus, "weight")}{" "}
+                      {latestWeightEntry ? "lb" : getStatusUnit(latestExtractedStatus, "weight")}
                     </Text>
                   </View>
                   <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
@@ -2766,7 +3245,11 @@ export default function HealthScreen() {
         title={actionSheetTitle}
         options={actionSheetOptions}
         variant={actionSheetVariant}
-        onClose={() => setActionSheetVisible(false)}
+        footerText={actionSheetFooter}
+        onClose={() => {
+          setActionSheetVisible(false);
+          setActionSheetFooter(undefined);
+        }}
       />
 
       <ManualHealthStatusModal
@@ -2867,12 +3350,18 @@ export default function HealthScreen() {
                       <ToggleRow
                         label="Vaccines up-to-date"
                         value={preventive.vaccinesUpToDate}
-                        onChange={(v) => setPreventive(prev => ({ ...prev, vaccinesUpToDate: v }))}
+                        onChange={(v) => {
+                          markWellnessUserChanged();
+                          setPreventive(prev => ({ ...prev, vaccinesUpToDate: v }));
+                        }}
                       />
                       <ToggleRow
                         label="Parasite control current"
                         value={preventive.parasiteControlCurrent}
-                        onChange={(v) => setPreventive(prev => ({ ...prev, parasiteControlCurrent: v }))}
+                        onChange={(v) => {
+                          markWellnessUserChanged();
+                          setPreventive(prev => ({ ...prev, parasiteControlCurrent: v }));
+                        }}
                       />
                     </View>
                   </View>
@@ -2896,7 +3385,10 @@ export default function HealthScreen() {
                         value={medical.chronicConditionsCount}
                         min={0}
                         max={5}
-                        onChange={(v) => setMedical(prev => ({ ...prev, chronicConditionsCount: v }))}
+                        onChange={(v) => {
+                          markWellnessUserChanged();
+                          setMedical(prev => ({ ...prev, chronicConditionsCount: v }));
+                        }}
                       />
                       <NumberAdjustRow
                         label="Medication compliance"
@@ -2905,14 +3397,20 @@ export default function HealthScreen() {
                         max={100}
                         step={5}
                         suffix="%"
-                        onChange={(v) => setMedical(prev => ({ ...prev, medicationCompliance: v }))}
+                        onChange={(v) => {
+                          markWellnessUserChanged();
+                          setMedical(prev => ({ ...prev, medicationCompliance: v }));
+                        }}
                       />
                       <NumberAdjustRow
                         label="Symptoms logged (30d)"
                         value={medical.recentSymptomsLogged}
                         min={0}
                         max={10}
-                        onChange={(v) => setMedical(prev => ({ ...prev, recentSymptomsLogged: v }))}
+                        onChange={(v) => {
+                          markWellnessUserChanged();
+                          setMedical(prev => ({ ...prev, recentSymptomsLogged: v }));
+                        }}
                       />
                     </View>
                   </View>
@@ -2940,15 +3438,15 @@ export default function HealthScreen() {
                         </Text>
                       </View>
                       <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Months since last</Text>
+                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Days since last</Text>
                         <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                          {weightMetrics.hasHistory ? `${weightMetrics.lastRecordedMonthsAgo} mo` : "N/A"}
+                          {weightMetrics.hasHistory ? `${weightMetrics.lastRecordedDaysAgo} d` : "N/A"}
                         </Text>
                       </View>
                       <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Weight change</Text>
+                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Change vs baseline</Text>
                         <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                          {weightMetrics.hasHistory
+                          {weightMetrics.hasHistory && weightMetrics.hasBaseline
                             ? `${Math.round(weightMetrics.percentChange)}%`
                             : "N/A"}
                         </Text>

@@ -1,5 +1,5 @@
 import React from "react";
-import { View, Text, TouchableOpacity, TextInput, StyleSheet } from "react-native";
+import { View, Text, TouchableOpacity, TextInput, StyleSheet, Pressable, Switch } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { SPACING, TYPOGRAPHY, RADIUS, SHADOWS } from "@src/theme";
@@ -211,6 +211,28 @@ export function Banner({
     >
       <Text style={{ ...TYPOGRAPHY.sm, color: toneStyle.text }}>{text}</Text>
     </View>
+  );
+}
+
+export function Toggle({
+  value,
+  onValueChange,
+  disabled = false,
+}: {
+  value: boolean;
+  onValueChange: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  const { colors } = useTheme();
+  return (
+    <Switch
+      value={value}
+      onValueChange={onValueChange}
+      disabled={disabled}
+      trackColor={{ false: colors.borderLight, true: colors.accent }}
+      thumbColor={colors.white}
+      ios_backgroundColor={colors.borderLight}
+    />
   );
 }
 

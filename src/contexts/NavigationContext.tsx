@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useRef, useCallback } from 'react';
 
 interface NavigationContextType {
+  activeTab: string;
+  setActiveTab: (tab: string) => void;
   activeScreen: string | null;
   setActiveScreen: (screen: string | null) => void;
   navigateTo: (screen: string) => void;
@@ -19,6 +21,7 @@ interface NavigationContextType {
 const NavigationContext = createContext<NavigationContextType | undefined>(undefined);
 
 export function NavigationProvider({ children }: { children: React.ReactNode }) {
+  const [activeTab, setActiveTab] = useState("home");
   const [activeScreen, setActiveScreen] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [navHidden, setNavHidden] = useState(false);
@@ -38,6 +41,7 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
   const navigateTo = (screen: string) => {
     setNavHidden(false);
     if (screen === "Home") {
+      setActiveTab("home");
       setActiveScreenSafe(null);
     } else {
       setActiveScreen(screen);
@@ -112,6 +116,8 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
 
   return (
     <NavigationContext.Provider value={{ 
+      activeTab,
+      setActiveTab,
       activeScreen, 
       setActiveScreen: setActiveScreenSafe,
       navigateTo,

@@ -10,6 +10,12 @@ interface ProfileData {
   ownerEmail?: string;
   ownerName?: string;
   ownerPhone?: string;
+  ownerLegalFirstName?: string;
+  ownerLegalLastName?: string;
+  ownerPreferredFirstName?: string;
+  ownerResidentialAddress?: string;
+  ownerMailingAddress?: string;
+  ownerEmergencyContact?: string;
   bio?: string;
   avatarUrl?: string;
   coverUrl?: string;
@@ -33,6 +39,12 @@ const defaultProfile: ProfileData = {
   ownerEmail: "",
   ownerName: "",
   ownerPhone: "",
+  ownerLegalFirstName: "",
+  ownerLegalLastName: "",
+  ownerPreferredFirstName: "",
+  ownerResidentialAddress: "",
+  ownerMailingAddress: "",
+  ownerEmergencyContact: "",
   bio: "",
   breed: "",
   birthDate: "",
@@ -58,6 +70,12 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
           ownerName: remote.owner_name || prev.ownerName,
           ownerPhone: remote.owner_phone || prev.ownerPhone,
           ownerEmail: remote.owner_email || user.email || prev.ownerEmail,
+          ownerLegalFirstName: remote.owner_legal_first_name || prev.ownerLegalFirstName,
+          ownerLegalLastName: remote.owner_legal_last_name || prev.ownerLegalLastName,
+          ownerPreferredFirstName: remote.owner_preferred_first_name || prev.ownerPreferredFirstName,
+          ownerResidentialAddress: remote.owner_residential_address || prev.ownerResidentialAddress,
+          ownerMailingAddress: remote.owner_mailing_address || prev.ownerMailingAddress,
+          ownerEmergencyContact: remote.owner_emergency_contact || prev.ownerEmergencyContact,
         }));
       }
     } catch (error) {
@@ -156,9 +174,15 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
       try {
         if (user?.id) {
           await upsertUserProfile(user.id, {
-          ownerName: updatedProfile.ownerName,
-          ownerPhone: updatedProfile.ownerPhone,
+            ownerName: updatedProfile.ownerName,
+            ownerPhone: updatedProfile.ownerPhone,
             ownerEmail: updatedProfile.ownerEmail || user.email,
+            ownerLegalFirstName: updatedProfile.ownerLegalFirstName,
+            ownerLegalLastName: updatedProfile.ownerLegalLastName,
+            ownerPreferredFirstName: updatedProfile.ownerPreferredFirstName,
+            ownerResidentialAddress: updatedProfile.ownerResidentialAddress,
+            ownerMailingAddress: updatedProfile.ownerMailingAddress,
+            ownerEmergencyContact: updatedProfile.ownerEmergencyContact,
           });
         }
 

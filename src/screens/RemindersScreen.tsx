@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from "react";
-import { View, Text, SectionList, TouchableOpacity, Modal, Alert, Platform, ScrollView } from "react-native";
+import { View, Text, SectionList, TouchableOpacity, Modal, Alert, Platform, ScrollView, Linking } from "react-native";
 
 // Conditionally import DateTimePicker only for native platforms
 let DateTimePicker: any = null;
@@ -15,7 +15,7 @@ import { useTheme } from "@src/contexts/ThemeContext";
 import { useNavigation } from "@src/contexts/NavigationContext";
 import { usePets } from "@src/contexts/PetContext";
 import { useAuth } from "@src/contexts/AuthContext";
-import { Input, Button } from "@src/components/UI";
+import { Input, Button, Card } from "@src/components/UI";
 import ActionSheet, { ActionSheetOption } from "@src/components/ActionSheet";
 import EmptyState from "@src/components/EmptyState";
 import { Ionicons } from "@expo/vector-icons";
@@ -1276,6 +1276,10 @@ export default function RemindersScreen() {
   const [highlightedReminderId, setHighlightedReminderId] = useState<string | null>(null);
   const [pendingTargetId, setPendingTargetId] = useState<string | null>(null);
   const listRef = useRef<SectionList<ReminderItem>>(null);
+  const itemsRef = useRef<ReminderItem[]>(items);
+  const userIdRef = useRef<string | null>(user?.id || null);
+  const activePetIdRef = useRef<string | null>(activePetId || null);
+  const isCheckingRef = useRef(false);
 
   // Register callback to open add reminder modal
   useEffect(() => {
@@ -1309,56 +1313,75 @@ export default function RemindersScreen() {
     loadTarget();
   }, [items]);
 
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
+  useEffect(() => {
+    userIdRef.current = user?.id || null;
+    activePetIdRef.current = activePetId || null;
+  }, [user?.id, activePetId]);
+
   // Load reminders from Supabase on mount
   useEffect(() => {
     loadReminders();
   }, [activePetId, user?.id]);
 
   useEffect(() => {
-    if (!user?.id || !activePetId || items.length === 0) return;
+    if (!user?.id || !activePetId) return;
     let cancelled = false;
     const checkDueReminders = async () => {
-      const now = Date.now();
-      const dueCandidates = items.filter(item =>
-        item.active &&
-        !item.completed &&
-        item.hasNotification &&
-        item.scheduledDate &&
-        item.scheduledTime
-      );
-      for (const reminder of dueCandidates) {
-        if (cancelled) return;
-        const dueAt = new Date(`${reminder.scheduledDate}T${reminder.scheduledTime}:00`);
-        if (Number.isNaN(dueAt.getTime())) continue;
-        const diffMs = dueAt.getTime() - now;
-        const dueAtIso = dueAt.toISOString();
-        if (diffMs <= 30 * 60 * 1000 && diffMs >= 0) {
-          const exists = await hasReminderNotification(user.id, reminder.id, "reminder_due", dueAtIso);
-          if (!exists) {
-            await insertNotification(user.id, {
-              petId: activePetId,
-              kind: "reminder",
-              title: "Reminder due soon",
-              message: `Upcoming: ${reminder.title} at ${dueAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}.`,
-              ctaLabel: "View reminder",
-              metadata: { type: "reminder_due", reminderId: reminder.id, dueAt: dueAtIso },
-            });
+      if (cancelled || isCheckingRef.current) return;
+      const currentUserId = userIdRef.current;
+      const currentPetId = activePetIdRef.current;
+      const currentItems = itemsRef.current;
+      if (!currentUserId || !currentPetId || currentItems.length === 0) return;
+      isCheckingRef.current = true;
+      try {
+        const now = Date.now();
+        const dueCandidates = currentItems.filter(item =>
+          item.active &&
+          !item.completed &&
+          item.hasNotification &&
+          item.scheduledDate &&
+          item.scheduledTime
+        );
+        for (const reminder of dueCandidates) {
+          if (cancelled) return;
+          const dueAt = new Date(`${reminder.scheduledDate}T${reminder.scheduledTime}:00`);
+          if (Number.isNaN(dueAt.getTime())) continue;
+          const diffMs = dueAt.getTime() - now;
+          const dueAtIso = dueAt.toISOString();
+          if (diffMs <= 30 * 60 * 1000 && diffMs >= 0) {
+            const exists = await hasReminderNotification(currentUserId, reminder.id, "reminder_due", dueAtIso);
+            if (!exists) {
+              await insertNotification(currentUserId, {
+                petId: currentPetId,
+                kind: "reminder",
+                title: "Reminder due soon",
+                message: `Upcoming: ${reminder.title} at ${dueAt.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}.`,
+                ctaLabel: "View reminder",
+                metadata: { type: "reminder_due", reminderId: reminder.id, dueAt: dueAtIso },
+              });
+            }
+            continue;
           }
-          continue;
-        }
-        if (now - dueAt.getTime() >= 2 * 60 * 60 * 1000) {
-          const exists = await hasReminderNotification(user.id, reminder.id, "reminder_followup", dueAtIso);
-          if (!exists) {
-            await insertNotification(user.id, {
-              petId: activePetId,
-              kind: "reminder",
-              title: "Reminder follow-up",
-              message: `Did you complete "${reminder.title}"?`,
-              ctaLabel: "View reminder",
-              metadata: { type: "reminder_followup", reminderId: reminder.id, dueAt: dueAtIso },
-            });
+          if (now - dueAt.getTime() >= 2 * 60 * 60 * 1000) {
+            const exists = await hasReminderNotification(currentUserId, reminder.id, "reminder_followup", dueAtIso);
+            if (!exists) {
+              await insertNotification(currentUserId, {
+                petId: currentPetId,
+                kind: "reminder",
+                title: "Reminder follow-up",
+                message: `Did you complete "${reminder.title}"?`,
+                ctaLabel: "View reminder",
+                metadata: { type: "reminder_followup", reminderId: reminder.id, dueAt: dueAtIso },
+              });
+            }
           }
         }
+      } finally {
+        isCheckingRef.current = false;
       }
     };
     checkDueReminders();
@@ -1367,7 +1390,7 @@ export default function RemindersScreen() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [items, user?.id, activePetId]);
+  }, [user?.id, activePetId]);
 
   const loadReminders = async () => {
     if (!user?.id || !activePetId) {
@@ -1565,6 +1588,9 @@ export default function RemindersScreen() {
         title="Reminders"
         actionIcon="paw"
         onActionPress={() => setShowAddModal(true)}
+        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        paddingTop={SPACING.lg}
+        paddingBottom={SPACING.lg}
       />
       
       <View style={{ 

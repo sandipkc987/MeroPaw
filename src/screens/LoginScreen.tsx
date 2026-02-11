@@ -130,6 +130,12 @@ export default function LoginScreen({ onLogin, onSignup, onForgotPassword, onBac
           </TouchableOpacity>
         </View>
 
+        {errorMessage ? (
+          <Text style={{ ...TYPOGRAPHY.xs, color: colors.danger, marginBottom: SPACING.lg }}>
+            {errorMessage}
+          </Text>
+        ) : null}
+
         <TouchableOpacity onPress={onForgotPassword} style={{ alignSelf: "flex-end", marginBottom: SPACING.xl }}>
           <Text style={{
             ...TYPOGRAPHY.sm,
@@ -139,19 +145,6 @@ export default function LoginScreen({ onLogin, onSignup, onForgotPassword, onBac
             Forgot Password?
           </Text>
         </TouchableOpacity>
-
-        {errorMessage ? (
-          <View style={{ marginBottom: SPACING.lg }}>
-            <Text style={{ ...TYPOGRAPHY.xs, color: colors.danger, marginBottom: SPACING.xs }}>
-              {errorMessage}
-            </Text>
-            <TouchableOpacity onPress={onForgotPassword}>
-              <Text style={{ ...TYPOGRAPHY.xs, color: colors.accent, fontWeight: "600" }}>
-                Forgot your password? Reset it
-              </Text>
-            </TouchableOpacity>
-          </View>
-        ) : null}
       </View>
 
       {/* Login Button */}

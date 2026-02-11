@@ -25,6 +25,7 @@
     },
     "android": {
       "package": "com.meropaw.app",
+      "googleServicesFile": "./firebase/google-services.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/meropaw Logo.png",
         "backgroundColor": "#0c3b32"
@@ -33,6 +34,9 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "plugins": [
+      "@react-native-firebase/app"
+    ],
     "extra": {
       "eas": {
         "projectId": "580d5671-2edf-4a42-9d5e-2229a0173483"

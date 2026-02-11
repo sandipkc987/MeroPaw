@@ -3,7 +3,7 @@ import { View, Text, ScrollView, Image, TouchableOpacity, Modal, TextInput, Aler
 import { LinearGradient } from "expo-linear-gradient";
 import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
-import { fetchPetProfileExtras, upsertPetProfileExtras, uploadProfilePhoto } from "@src/services/supabaseData";
+import { fetchPetProfileExtras, upsertPetProfileExtras, uploadProfilePhoto, fetchWellnessInputs } from "@src/services/supabaseData";
 import { Button, Card, Input } from "@src/components/UI";
 import { useAuth } from "@src/contexts/AuthContext";
 import { useProfile } from "@src/contexts/ProfileContext";
@@ -670,15 +670,19 @@ const WellnessSection = ({
   metrics,
   onSelectMood,
   onEdit,
+  scoreOverride,
 }: {
   mood: string;
   metrics: WellnessMetrics;
   onSelectMood: (key: string) => void;
   onEdit: () => void;
+  scoreOverride?: number | null;
 }) => {
   const { colors } = useTheme();
   const moodData = WELLNESS_MOOD_OPTIONS.find((option) => option.key === mood) || WELLNESS_MOOD_OPTIONS[0];
-  const wellnessScore = computeWellnessScore(metrics);
+  const wellnessScore = Number.isFinite(scoreOverride ?? NaN)
+    ? Math.round(Number(scoreOverride))
+    : computeWellnessScore(metrics);
 
   const MetricCard = ({ title, value, icon }: { title: string; value: string; icon: keyof typeof Ionicons.glyphMap }) => (
     <Card
@@ -1616,6 +1620,7 @@ export default function ProfileScreen() {
     allergies: "",
   });
   const [showWellnessEditor, setShowWellnessEditor] = useState(false);
+  const [healthWellnessScore, setHealthWellnessScore] = useState<number | null>(null);
   const [showEditBio, setShowEditBio] = useState(false);
   const [showEditPetInfo, setShowEditPetInfo] = useState(false);
   const [showPhotoModal, setShowPhotoModal] = useState(false);
@@ -1672,7 +1677,10 @@ export default function ProfileScreen() {
         const resetAchievements = () => setAchievements([]);
 
         if (user?.id) {
-          const extras = await fetchPetProfileExtras(user.id, activePetId);
+          const [extras, wellnessInputs] = await Promise.all([
+            fetchPetProfileExtras(user.id, activePetId),
+            fetchWellnessInputs(user.id, activePetId).catch(() => null),
+          ]);
           if (extras?.personality) {
             setPersonalityTraits(extras.personality.traits || []);
             setFavoriteActivity(extras.personality.favoriteActivity || "");
@@ -1698,6 +1706,9 @@ export default function ProfileScreen() {
           } else {
             resetAchievements();
           }
+          setHealthWellnessScore(
+            typeof wellnessInputs?.score === "number" ? wellnessInputs.score : null
+          );
           return;
         }
 
@@ -1733,6 +1744,7 @@ export default function ProfileScreen() {
         } else {
           resetAchievements();
         }
+        setHealthWellnessScore(null);
       } catch (error) {
         console.error("Failed to load pet profile data:", error);
       } finally {
@@ -2067,7 +2079,12 @@ export default function ProfileScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       {/* Screen Header with Back Button and Hamburger Menu */}
-      <ScreenHeader title="Profile" />
+      <ScreenHeader
+        title="Profile"
+        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        paddingTop={SPACING.lg}
+        paddingBottom={SPACING.lg}
+      />
       
       <ScrollView
         style={{ flex: 1 }}
@@ -2075,46 +2092,6 @@ export default function ProfileScreen() {
         showsVerticalScrollIndicator={false}
         bounces
       >
-        {/* Cover Photo */}
-        <TouchableOpacity
-          onPress={handleCoverPress}
-          activeOpacity={0.9}
-          style={{
-            marginHorizontal: SPACING.lg,
-            marginTop: SPACING.md,
-            borderRadius: RADIUS.xl,
-            overflow: "hidden",
-            borderWidth: 1,
-            borderColor: colors.borderLight,
-            backgroundColor: colors.card,
-            ...SHADOWS.sm,
-          }}
-        >
-          <Image
-            source={{ uri: profile.coverUrl }}
-            style={{ width: "100%", height: 150 }}
-            resizeMode="cover"
-          />
-          <View
-            style={{
-              position: "absolute",
-              right: 12,
-              bottom: 12,
-              backgroundColor: "rgba(0,0,0,0.55)",
-              paddingHorizontal: 10,
-              paddingVertical: 6,
-              borderRadius: RADIUS.pill,
-              flexDirection: "row",
-              alignItems: "center",
-            }}
-          >
-            <Ionicons name="camera" size={14} color="#fff" />
-            <Text style={{ color: "#fff", marginLeft: 6, fontWeight: "600", ...TYPOGRAPHY.xs }}>
-              Edit cover
-            </Text>
-          </View>
-        </TouchableOpacity>
-
         {/* Profile Header */}
         <View style={profileHeaderStyle}>
           <View style={{ flexDirection: "row", alignItems: "center" }}>
@@ -2339,6 +2316,7 @@ export default function ProfileScreen() {
                 metrics={wellnessMetrics}
                 onSelectMood={setWellnessMood}
                 onEdit={() => setShowWellnessEditor(true)}
+                scoreOverride={healthWellnessScore}
               />
             ) : (
               <Card elevated style={{ padding: SPACING.lg }}>

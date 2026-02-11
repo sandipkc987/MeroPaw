@@ -1,11 +1,11 @@
-import React, { useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, Alert, Linking, Switch } from "react-native";
+import React, { useState, useRef, useEffect } from "react";
+import { View, Text, ScrollView, TouchableOpacity, Alert, Linking } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { useAuth } from "@src/contexts/AuthContext";
 import { useNavigation } from "@src/contexts/NavigationContext";
-import { Card, Row, Divider, SectionTitle } from "@src/components/UI";
-import { SPACING, RADIUS, SHADOWS } from "@src/theme";
+import { Card, Row, Divider, SectionTitle, Toggle } from "@src/components/UI";
+import { SPACING, RADIUS, SHADOWS, TYPOGRAPHY } from "@src/theme";
 import PetSwitcher from "@src/components/PetSwitcher";
 import ScreenHeader from "@src/components/ScreenHeader";
 import Constants from "expo-constants";
@@ -13,9 +13,14 @@ import Constants from "expo-constants";
 export default function SettingsScreen() {
   const { colors } = useTheme();
   const { logout } = useAuth();
-  const { navigateTo, setActiveScreen } = useNavigation();
+  const { navigateTo, setActiveScreen, setNavHidden, goBack, canGoBack, setActiveTab } = useNavigation();
   const [backupEnabled, setBackupEnabled] = useState(false);
   const version = Constants.expoConfig?.version || "1.0.0";
+  const lastScrollYRef = useRef(0);
+
+  useEffect(() => {
+    return () => setNavHidden(false);
+  }, [setNavHidden]);
   
   // If user logs out, this component will unmount when App.tsx switches to AuthFlow
   // But we need to ensure the logout completes before the component tries to navigate
@@ -70,10 +75,37 @@ export default function SettingsScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Settings" showBackButton={false} />
+      <ScreenHeader
+        title="Settings"
+        showBackButton
+        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        paddingTop={SPACING.lg}
+        paddingBottom={SPACING.lg}
+        onBackPress={() => {
+          if (canGoBack) {
+            goBack();
+            return;
+          }
+          setActiveScreen(null);
+          setActiveTab("home");
+        }}
+      />
       <ScrollView 
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
+        onScroll={(event) => {
+          const y = event.nativeEvent.contentOffset?.y ?? 0;
+          const delta = y - lastScrollYRef.current;
+          if (y <= 0) {
+            setNavHidden(false);
+          } else if (delta > 12) {
+            setNavHidden(true);
+          } else if (delta < -12) {
+            setNavHidden(false);
+          }
+          lastScrollYRef.current = y;
+        }}
+        scrollEventThrottle={16}
       >
         {/* Pet Switcher */}
         <PetSwitcher />
@@ -162,11 +194,9 @@ export default function SettingsScreen() {
             label="Backup to Cloud"
             hint="Auto-save weekly"
             control={
-              <Switch
+              <Toggle
                 value={backupEnabled}
                 onValueChange={setBackupEnabled}
-                trackColor={{ false: colors.borderLight, true: colors.accent }}
-                thumbColor={colors.white}
               />
             }
           />

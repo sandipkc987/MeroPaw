@@ -17,11 +17,14 @@ import Select from "@src/components/Select";
 import { fetchExpenses, insertExpense, updateExpense, deleteExpense, getReceiptPublicUrl, insertNotification } from "@src/services/supabaseData";
 import storage from "@src/utils/storage";
 
+const expenseCategories = ["food", "medical", "toys", "grooming", "other"] as const;
+type ExpenseCategory = typeof expenseCategories[number];
+
 interface Expense {
   id: string;
   title: string;
   amount: number;
-  category: "food" | "medical" | "toys" | "grooming" | "other";
+  category: ExpenseCategory;
   date: string;
   createdAt?: string;
   notes?: string;
@@ -40,7 +43,7 @@ const AddExpenseModal = ({ visible, onClose, onSave, onDelete, petId, initialExp
   const { colors } = useTheme();
   const [title, setTitle] = useState("");
   const [amount, setAmount] = useState("");
-  const [category, setCategory] = useState<"food" | "medical" | "toys" | "grooming" | "other">("other");
+  const [category, setCategory] = useState<ExpenseCategory>("other");
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [notes, setNotes] = useState("");
   const [addMethod, setAddMethod] = useState<"manual" | "receipt">("manual");
@@ -49,13 +52,20 @@ const AddExpenseModal = ({ visible, onClose, onSave, onDelete, petId, initialExp
   const [analysisSummary, setAnalysisSummary] = useState<string | null>(null);
   const isEdit = !!initialExpense;
 
-  const categories: { value: "food" | "medical" | "toys" | "grooming" | "other"; label: string; emoji: string }[] = [
+  const categories: { value: ExpenseCategory; label: string; emoji: string }[] = [
     { value: "food", label: "Food", emoji: "🍽️" },
     { value: "medical", label: "Medical", emoji: "🏥" },
     { value: "toys", label: "Toys", emoji: "🎾" },
     { value: "grooming", label: "Grooming", emoji: "✂️" },
     { value: "other", label: "Other", emoji: "📦" },
   ];
+  const categoryOptions = categories.map((cat) => ({
+    label: cat.label,
+    value: cat.value,
+  }));
+
+  const isExpenseCategory = (value: string): value is ExpenseCategory =>
+    (expenseCategories as readonly string[]).includes(value);
 
   const handleSave = async () => {
     if (!title.trim()) {
@@ -144,13 +154,16 @@ const AddExpenseModal = ({ visible, onClose, onSave, onDelete, petId, initialExp
       
       if (extractedData.merchant) {
         setTitle(extractedData.merchant);
-      } else if (extractedData.items && extractedData.items.length > 0) {
-        // Use first item as title if no merchant
-        setTitle(extractedData.items[0]);
+      } else {
+        const firstItem = extractedData.items?.[0];
+        if (firstItem) {
+          // Use first item as title if no merchant
+          setTitle(String(firstItem));
+        }
       }
       
       if (extractedData.category) {
-        setCategory(extractedData.category);
+        setCategory(isExpenseCategory(extractedData.category) ? extractedData.category : "other");
       }
 
       if (extractedData.receiptPath) {
@@ -205,226 +218,90 @@ const AddExpenseModal = ({ visible, onClose, onSave, onDelete, petId, initialExp
           paddingTop: SPACING.lg,
           paddingHorizontal: SPACING.lg,
           paddingBottom: SPACING.xl,
-          maxHeight: "85%"
+          maxHeight: "85%",
+          borderWidth: 1,
+          borderColor: colors.borderLight,
+          overflow: "hidden",
+          ...SHADOWS.lg
         }}>
-          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.lg }}>
-            <TouchableOpacity onPress={onClose} style={{ marginRight: SPACING.md }}>
-              <Ionicons name="close" size={24} color={colors.textMuted} />
-            </TouchableOpacity>
-            <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text, flex: 1 }}>
-              {isEdit ? "Edit Expense" : "Add Expense"}
-            </Text>
-            <TouchableOpacity onPress={handleSave}>
-              <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.accent }}>
-                {isEdit ? "Update" : "Save"}
+          <View style={{ 
+            flexDirection: "row", 
+            justifyContent: "space-between", 
+            alignItems: "center", 
+            marginBottom: SPACING.xs
+          }}>
+            <View>
+              <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
+                {isEdit ? "Edit Expense" : "Add expense"}
               </Text>
+              <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: 2 }}>
+                Track a purchase for your pet
+              </Text>
+            </View>
+            <TouchableOpacity onPress={onClose}>
+              <Ionicons name="close" size={22} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
+          <View style={{ height: 1, backgroundColor: colors.borderLight, marginBottom: SPACING.md }} />
           
-          {/* Add Method Selection */}
-          <View style={{ marginBottom: SPACING.lg }}>
-            <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-              Add Method
-            </Text>
-            <View style={{ flexDirection: "row", gap: SPACING.sm }}>
-              <TouchableOpacity
-                onPress={() => setAddMethod("manual")}
+          <ScrollView
+            showsVerticalScrollIndicator
+            contentContainerStyle={{ paddingBottom: SPACING.md, paddingTop: SPACING.sm }}
+          >
+            {/* Add Method Selection */}
+            <View style={{ marginBottom: SPACING.lg }}>
+              <View
                 style={{
-                  flex: 1,
                   flexDirection: "row",
-                  alignItems: "center",
-                  paddingVertical: SPACING.md,
-                  paddingHorizontal: SPACING.md,
-                  backgroundColor: addMethod === "manual" ? colors.accent : colors.surface,
-                  borderRadius: RADIUS.lg,
+                  borderRadius: RADIUS.pill,
                   borderWidth: 1,
-                  borderColor: addMethod === "manual" ? colors.accent : colors.borderLight,
+                  borderColor: colors.borderLight,
+                  backgroundColor: colors.cardSecondary,
+                  overflow: "hidden",
                 }}
               >
-                <Ionicons 
-                  name="create" 
-                  size={20} 
-                  color={addMethod === "manual" ? colors.white : colors.textMuted} 
-                  style={{ marginRight: SPACING.sm }}
-                />
-                <Text style={{ 
-                  ...TYPOGRAPHY.sm, 
-                  color: addMethod === "manual" ? colors.white : colors.textMuted,
-                  fontWeight: "600"
-                }}>
-                  Manual Entry
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => setAddMethod("receipt")}
-                style={{
-                  flex: 1,
-                  flexDirection: "row",
-                  alignItems: "center",
-                  paddingVertical: SPACING.md,
-                  paddingHorizontal: SPACING.md,
-                  backgroundColor: addMethod === "receipt" ? colors.accent : colors.surface,
-                  borderRadius: RADIUS.lg,
-                  borderWidth: 1,
-                  borderColor: addMethod === "receipt" ? colors.accent : colors.borderLight,
-                }}
-              >
-                <Ionicons 
-                  name="camera" 
-                  size={20} 
-                  color={addMethod === "receipt" ? colors.white : colors.textMuted} 
-                  style={{ marginRight: SPACING.sm }}
-                />
-                <Text style={{ 
-                  ...TYPOGRAPHY.sm, 
-                  color: addMethod === "receipt" ? colors.white : colors.textMuted,
-                  fontWeight: "600"
-                }}>
-                  Receipt Upload
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {addMethod === "manual" && (
-            <View style={{ gap: SPACING.md }}>
-              <Input
-                label="Expense Title"
-                value={title}
-                onChangeText={setTitle}
-                placeholder="e.g., Premium Dog Food"
-              />
-              
-              <Input
-                label="Amount"
-                value={amount}
-                onChangeText={setAmount}
-                placeholder="0.00"
-                keyboardType="numeric"
-              />
-
-              <Input
-                label="Notes (optional)"
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="Add notes"
-                multiline
-                style={{ minHeight: 80 }}
-              />
-
-              {/* Category Selection */}
-              <View>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Category
-                </Text>
-                <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm }}>
-                  {categories.map((cat) => (
+                {(["manual", "receipt"] as const).map((method, idx) => {
+                  const isActive = addMethod === method;
+                  return (
                     <TouchableOpacity
-                      key={cat.value}
-                      onPress={() => setCategory(cat.value)}
+                      key={method}
+                      onPress={() => setAddMethod(method)}
                       style={{
-                        flexDirection: "row",
-                        alignItems: "center",
+                        flex: 1,
                         paddingVertical: SPACING.sm,
-                        paddingHorizontal: SPACING.md,
-                        backgroundColor: category === cat.value ? colors.accent : colors.surface,
-                        borderRadius: RADIUS.lg,
-                        borderWidth: 1,
-                        borderColor: category === cat.value ? colors.accent : colors.borderLight,
+                        alignItems: "center",
+                        backgroundColor: isActive ? colors.accent : "transparent",
+                        borderRightWidth: idx === 1 ? 0 : 1,
+                        borderRightColor: colors.borderLight,
                       }}
                     >
-                      <Text style={{ fontSize: 16, marginRight: SPACING.xs }}>{cat.emoji}</Text>
-                      <Text style={{ 
-                        ...TYPOGRAPHY.sm, 
-                        color: category === cat.value ? colors.white : colors.textMuted,
-                        fontWeight: "600"
-                      }}>
-                        {cat.label}
+                      <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: isActive ? colors.white : colors.textMuted }}>
+                        {method === "manual" ? "Manual" : "Receipt"}
                       </Text>
                     </TouchableOpacity>
-                  ))}
-                </View>
+                  );
+                })}
               </View>
-
-              <Input
-                label="Date"
-                value={date}
-                onChangeText={setDate}
-                placeholder="YYYY-MM-DD"
-              />
             </View>
-          )}
 
-          {addMethod === "receipt" && (
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={{ marginBottom: SPACING.md }}>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Upload Receipt
-                </Text>
-                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.md }}>
-                  Take a photo or upload a PDF of your receipt. We'll automatically extract the amount, date, and merchant information.
-                </Text>
-                
-                <ReceiptUpload
-                  onReceiptSelect={setReceipt}
-                  currentReceipt={receipt}
-                  onAnalyze={handleReceiptAnalysis}
-                />
-              </View>
-
-              {isAnalyzing && (
-                <View style={{ 
-                  flexDirection: "row", 
-                  alignItems: "center", 
-                  justifyContent: "center",
-                  paddingVertical: SPACING.md,
-                  backgroundColor: colors.accent + "10",
-                  borderRadius: RADIUS.md,
-                  marginBottom: SPACING.md
-                }}>
-                  <ActivityIndicator size="small" color={colors.accent} style={{ marginRight: SPACING.sm }} />
-                  <Text style={{ ...TYPOGRAPHY.sm, color: colors.accent, fontWeight: "600" }}>
-                    Analyzing receipt...
+            {addMethod === "manual" && (
+              <View style={{ gap: SPACING.md }}>
+                <View>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                    Expense name
                   </Text>
-                </View>
-              )}
-
-              {analysisSummary && (
-                <View style={{
-                  padding: SPACING.md,
-                  backgroundColor: colors.successLight,
-                  borderRadius: RADIUS.md,
-                  borderWidth: 1,
-                  borderColor: colors.success,
-                  marginBottom: SPACING.md,
-                }}>
-                  <Text style={{ ...TYPOGRAPHY.sm, color: colors.success, fontWeight: "600" }}>
-                    Receipt analyzed
-                  </Text>
-                  <Text style={{ ...TYPOGRAPHY.sm, color: colors.text, marginTop: SPACING.xs }}>
-                    {analysisSummary}
-                  </Text>
-                </View>
-              )}
-
-              {/* Form fields for editing extracted data */}
-              <View style={{ marginTop: SPACING.md }}>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Review & Edit Details
-                </Text>
-                
-                <View style={{ marginBottom: SPACING.md }}>
                   <Input
-                    label="Expense Title"
                     value={title}
                     onChangeText={setTitle}
-                    placeholder="e.g., Premium Dog Food"
+                    placeholder="Premium dog food"
                   />
                 </View>
                 
-                <View style={{ marginBottom: SPACING.md }}>
+                <View>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                    Amount
+                  </Text>
                   <Input
-                    label="Amount"
                     value={amount}
                     onChangeText={setAmount}
                     placeholder="0.00"
@@ -433,52 +310,38 @@ const AddExpenseModal = ({ visible, onClose, onSave, onDelete, petId, initialExp
                 </View>
 
                 {/* Category Selection */}
-                <View style={{ marginBottom: SPACING.md }}>
-                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
+                <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text }}>
                     Category
                   </Text>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-                    {categories.map((cat, index) => (
-                      <TouchableOpacity
-                        key={cat.value}
-                        onPress={() => setCategory(cat.value)}
-                        style={{
-                          flexDirection: "row",
-                          alignItems: "center",
-                          paddingVertical: SPACING.sm,
-                          paddingHorizontal: SPACING.md,
-                          backgroundColor: category === cat.value ? colors.accent : colors.surface,
-                          borderRadius: RADIUS.lg,
-                          borderWidth: 1,
-                          borderColor: category === cat.value ? colors.accent : colors.borderLight,
-                          marginRight: index < categories.length - 1 ? SPACING.sm : 0,
-                          marginBottom: SPACING.sm,
-                        }}
-                      >
-                        <Text style={{ fontSize: 16, marginRight: SPACING.xs }}>{cat.emoji}</Text>
-                        <Text style={{ 
-                          ...TYPOGRAPHY.sm, 
-                          color: category === cat.value ? colors.white : colors.textMuted,
-                          fontWeight: "600"
-                        }}>
-                          {cat.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
+                  <View style={{ position: "relative" }}>
+                    <Select
+                      value={category}
+                      onChange={(v) => setCategory(v as ExpenseCategory)}
+                      options={categoryOptions}
+                      modalTitle="Category"
+                      modalIcon="pricetag-outline"
+                      width={200}
+                    />
+                    <View
+                      pointerEvents="none"
+                      style={{
+                        position: "absolute",
+                        right: 10,
+                        top: "50%",
+                        transform: [{ translateY: -8 }],
+                      }}
+                    >
+                      <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
+                    </View>
                   </View>
                 </View>
 
-                <View style={{ marginBottom: SPACING.md }}>
+                <View>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                    Notes (optional)
+                  </Text>
                   <Input
-                    label="Date"
-                    value={date}
-                    onChangeText={setDate}
-                    placeholder="YYYY-MM-DD"
-                  />
-                </View>
-                <View style={{ marginBottom: SPACING.md }}>
-                  <Input
-                    label="Notes (optional)"
                     value={notes}
                     onChangeText={setNotes}
                     placeholder="Add notes"
@@ -486,10 +349,175 @@ const AddExpenseModal = ({ visible, onClose, onSave, onDelete, petId, initialExp
                     style={{ minHeight: 80 }}
                   />
                 </View>
-              </View>
-            </ScrollView>
-          )}
 
+                <View>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                    Date
+                  </Text>
+                  <Input
+                    value={date}
+                    onChangeText={setDate}
+                    placeholder="YYYY-MM-DD"
+                  />
+                </View>
+              </View>
+            )}
+
+            {addMethod === "receipt" && (
+              <View>
+                <View style={{ marginBottom: SPACING.md }}>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                    Receipt upload
+                  </Text>
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.md }}>
+                    Auto-fill amount, date, and merchant from a photo or PDF.
+                  </Text>
+                  
+                  <ReceiptUpload
+                    onReceiptSelect={setReceipt}
+                    currentReceipt={receipt}
+                    onAnalyze={handleReceiptAnalysis}
+                  />
+                </View>
+
+                {isAnalyzing && (
+                  <View style={{ 
+                    flexDirection: "row", 
+                    alignItems: "center", 
+                    justifyContent: "center",
+                    paddingVertical: SPACING.md,
+                    backgroundColor: colors.accent + "10",
+                    borderRadius: RADIUS.md,
+                    marginBottom: SPACING.md
+                  }}>
+                    <ActivityIndicator size="small" color={colors.accent} style={{ marginRight: SPACING.sm }} />
+                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.accent, fontWeight: "600" }}>
+                      Analyzing receipt...
+                    </Text>
+                  </View>
+                )}
+
+                {analysisSummary && (
+                  <View style={{
+                    padding: SPACING.md,
+                    backgroundColor: colors.successLight,
+                    borderRadius: RADIUS.md,
+                    borderWidth: 1,
+                    borderColor: colors.success,
+                    marginBottom: SPACING.md,
+                  }}>
+                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.success, fontWeight: "600" }}>
+                      Receipt analyzed
+                    </Text>
+                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.text, marginTop: SPACING.xs }}>
+                      {analysisSummary}
+                    </Text>
+                  </View>
+                )}
+
+                {/* Form fields for editing extracted data */}
+                <View style={{ marginTop: SPACING.md }}>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                    Review & edit details
+                  </Text>
+                  
+                  <View style={{ marginBottom: SPACING.md }}>
+                    <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                      Expense name
+                    </Text>
+                    <Input
+                      value={title}
+                      onChangeText={setTitle}
+                      placeholder="Premium dog food"
+                    />
+                  </View>
+                  
+                  <View style={{ marginBottom: SPACING.md }}>
+                    <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                      Amount
+                    </Text>
+                    <Input
+                      value={amount}
+                      onChangeText={setAmount}
+                      placeholder="0.00"
+                      keyboardType="numeric"
+                    />
+                  </View>
+
+                {/* Category Selection */}
+                <View style={{ marginBottom: SPACING.md, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text }}>
+                    Category
+                  </Text>
+                  <View style={{ position: "relative" }}>
+                    <Select
+                      value={category}
+                      onChange={(v) => setCategory(v as ExpenseCategory)}
+                      options={categoryOptions}
+                      modalTitle="Category"
+                      modalIcon="pricetag-outline"
+                      width={200}
+                    />
+                    <View
+                      pointerEvents="none"
+                      style={{
+                        position: "absolute",
+                        right: 10,
+                        top: "50%",
+                        transform: [{ translateY: -8 }],
+                      }}
+                    >
+                      <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
+                    </View>
+                  </View>
+                </View>
+
+                  <View style={{ marginBottom: SPACING.md }}>
+                    <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.xs, color: colors.text }}>
+                      Date
+                    </Text>
+                    <Input
+                      value={date}
+                      onChangeText={setDate}
+                      placeholder="YYYY-MM-DD"
+                    />
+                  </View>
+                  <View style={{ marginBottom: SPACING.md }}>
+                    <Input
+                      label="Notes (optional)"
+                      value={notes}
+                      onChangeText={setNotes}
+                      placeholder="Add notes"
+                      multiline
+                      style={{ minHeight: 80 }}
+                    />
+                  </View>
+                </View>
+              </View>
+            )}
+          </ScrollView>
+
+          <View style={{ height: 1, backgroundColor: colors.borderLight, marginTop: SPACING.lg }} />
+          <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, textAlign: "center", marginTop: SPACING.sm }}>
+            You can edit expenses later.
+          </Text>
+          <View style={{ 
+            flexDirection: "row", 
+            marginTop: SPACING.md,
+            paddingTop: SPACING.xs
+          }}>
+            <Button
+              title="Cancel"
+              onPress={onClose}
+              style={{ flex: 1, marginRight: SPACING.sm, backgroundColor: colors.bgSecondary }}
+              titleStyle={{ color: colors.text }}
+            />
+            <Button
+              title={isEdit ? "Update" : "Save"}
+              onPress={handleSave}
+              style={{ flex: 1, marginLeft: SPACING.sm }}
+            />
+          </View>
           {isEdit && onDelete && (
             <TouchableOpacity
               onPress={() => {
@@ -502,7 +530,7 @@ const AddExpenseModal = ({ visible, onClose, onSave, onDelete, petId, initialExp
                   ]
                 );
               }}
-              style={{ alignSelf: "flex-start", marginTop: SPACING.md }}
+              style={{ alignSelf: "flex-start", marginTop: SPACING.sm }}
             >
               <Text style={{ ...TYPOGRAPHY.sm, color: colors.danger, fontWeight: "600" }}>
                 Delete expense
@@ -585,11 +613,6 @@ export default function ExpensesScreen() {
   const insightTabs = ['Total Spent', 'Top Category', 'This Month Spent'] as const;
   const [activeInsightTab, setActiveInsightTab] = useState<typeof insightTabs[number]>('Total Spent');
 
-  // Load expenses from Supabase on mount / pet change
-  useEffect(() => {
-    loadExpenses();
-  }, [activePetId, user?.id]);
-
   useEffect(() => {
     registerAddExpenseCallback(() => {
       setShowAddModal(true);
@@ -631,7 +654,7 @@ export default function ExpensesScreen() {
     setTimeout(() => setHighlightedExpenseId(null), 6000);
   }, [pendingExpenseId, expenses]);
 
-  const loadExpenses = async () => {
+  const loadExpenses = useCallback(async () => {
     if (!user?.id || !activePetId) {
           setExpenses([]);
             return;
@@ -643,7 +666,12 @@ export default function ExpensesScreen() {
       console.error("Failed to load expenses:", error);
       setExpenses([]);
     }
-  };
+  }, [user?.id, activePetId]);
+
+  // Load expenses from Supabase on mount / pet change
+  useEffect(() => {
+    loadExpenses();
+  }, [loadExpenses]);
 
   // Calculate date range based on selected time period
   const getDateRange = useCallback((period: TimePeriod): { start: Date; end: Date; budget: number } => {
@@ -909,6 +937,8 @@ export default function ExpensesScreen() {
       .sort((a, b) => b.amount - a.amount);
   }, [periodFilteredExpenses]);
 
+  const topCategory = categoryBreakdown[0];
+
 
   const addExpense = async (expenseData: Omit<Expense, 'id'>) => {
     if (!user?.id || !activePetId) {
@@ -1007,6 +1037,13 @@ export default function ExpensesScreen() {
     navigateTo("Receipts");
   };
 
+  const handleExport = (format: "csv" | "pdf") => {
+    Alert.alert(
+      "Export expenses",
+      `We'll add ${format.toUpperCase()} export soon.`
+    );
+  };
+
   const getCategoryColor = (category: string) => {
     switch (category) {
       case "food": return "#FF8A5B";
@@ -1024,6 +1061,9 @@ export default function ExpensesScreen() {
         title="Expenses"
         actionIcon="paw"
         onActionPress={() => setShowAddModal(true)}
+        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        paddingTop={SPACING.lg}
+        paddingBottom={SPACING.lg}
       />
       
       <ScrollView
@@ -1120,7 +1160,7 @@ export default function ExpensesScreen() {
               </View>
             )}
             
-            {activeInsightTab === 'Top Category' && categoryBreakdown.length > 0 && (
+            {activeInsightTab === 'Top Category' && topCategory && (
               <View style={{
                 flexDirection: "row",
                 alignItems: "center",
@@ -1134,12 +1174,12 @@ export default function ExpensesScreen() {
                   <View style={{ width: 1, height: 20, backgroundColor: colors.borderLight, marginRight: SPACING.md }} />
                   <View style={{ flex: 1 }}>
                     <Text style={{ ...TYPOGRAPHY.base, color: colors.text, fontWeight: "600" }}>
-                      {categoryBreakdown[0].category === "other" 
-                        ? "Other" 
-                        : categoryBreakdown[0].category.charAt(0).toUpperCase() + categoryBreakdown[0].category.slice(1)}
+                      {topCategory.category === "other"
+                        ? "Other"
+                        : topCategory.category.charAt(0).toUpperCase() + topCategory.category.slice(1)}
                     </Text>
                     <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
-                      ${categoryBreakdown[0].amount.toFixed(2)}
+                      ${topCategory.amount.toFixed(2)}
                     </Text>
                   </View>
                 </View>

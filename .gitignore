@@ -1,6 +1,10 @@
 node_modules/
 .env
 .expo/
+
+# Firebase secrets (never commit)
+firebase/*-firebase-adminsdk-*.json
+firebase/google-services.json
 .vscode/
 npm-debug.log*
 yarn-debug.log*

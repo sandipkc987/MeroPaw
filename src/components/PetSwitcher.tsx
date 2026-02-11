@@ -297,7 +297,7 @@ export default function PetSwitcher() {
                         }}
                         activeOpacity={0.7}
                         style={{ 
-                          marginLeft: SPACING.sm,
+                          marginLeft: SPACING.sm, 
                           padding: SPACING.sm,
                           borderRadius: RADIUS.md,
                           backgroundColor: colors.danger + "10",

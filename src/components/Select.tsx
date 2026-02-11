@@ -46,7 +46,7 @@ export default function Select({
             style={[
               styles.modalCard,
               {
-                backgroundColor: colors.card,
+            backgroundColor: colors.card,
                 borderColor: colors.borderLight,
                 shadowColor: colors.black,
               },

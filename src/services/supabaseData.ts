@@ -1,4 +1,5 @@
-import { getSupabaseClient } from "@src/services/supabaseClient";
+import { getSupabaseClient, supabaseAnonKey, supabaseUrl } from "@src/services/supabaseClient";
+import { getNotificationPreferences, shouldSendNotification } from "@src/services/notificationPreferences";
 import * as FileSystemLegacy from "expo-file-system/legacy";
 
 const MEMORY_BUCKET = "memories";
@@ -181,6 +182,21 @@ export async function fetchNotifications(userId: string, petId?: string) {
   }));
 }
 
+export async function fetchUnreadNotificationCount(userId: string, petId?: string) {
+  const supabase = getSupabaseClient();
+  let query = supabase
+    .from("notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("owner_id", userId)
+    .is("read_at", null);
+  if (petId) {
+    query = query.or(`pet_id.is.null,pet_id.eq.${petId}`);
+  }
+  const { count, error } = await query;
+  if (error) throw error;
+  return count || 0;
+}
+
 export async function insertNotification(
   userId: string,
   payload: {
@@ -193,6 +209,14 @@ export async function insertNotification(
     metadata?: Record<string, any>;
   }
 ) {
+  try {
+    const prefs = await getNotificationPreferences();
+    if (!shouldSendNotification(payload.kind, prefs)) {
+      return null;
+    }
+  } catch (error) {
+    console.warn("insertNotification: preference check failed, allowing notification", error);
+  }
   const supabase = getSupabaseClient();
   const row = {
     owner_id: userId,
@@ -210,7 +234,85 @@ export async function insertNotification(
     .select()
     .single();
   if (error) throw error;
+  sendPushNotification(userId, payload).catch(err => {
+    console.warn("insertNotification: push send failed", err);
+  });
   return data;
+}
+
+async function getFunctionsAuthHeader() {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  let accessToken = data?.session?.access_token;
+  if (!accessToken) {
+    const { data: refreshed, error: refreshError } = await supabase.auth.refreshSession();
+    if (refreshError) throw refreshError;
+    accessToken = refreshed?.session?.access_token;
+  }
+  if (!accessToken) {
+    throw new Error("Missing session. Please sign in again before sending push notifications.");
+  }
+  return { Authorization: `Bearer ${accessToken}` };
+}
+
+async function fetchPushTokens(userId: string): Promise<string[]> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("push_tokens")
+    .select("expo_push_token")
+    .eq("owner_id", userId);
+  if (error) throw error;
+  return (data || [])
+    .map((row: any) => row.expo_push_token)
+    .filter((token: string) => !!token);
+}
+
+async function invokeFunctionWithAuth(functionName: string, body: Record<string, any>) {
+  const headers: Record<string, string> = {};
+  const res = await fetch(`${supabaseUrl}/functions/v1/${functionName}`, {
+    method: "POST",
+    headers: {
+      ...headers,
+      apikey: supabaseAnonKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(text || `Function ${functionName} failed with status ${res.status}`);
+  }
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
+
+async function sendPushNotification(
+  userId: string,
+  payload: {
+    kind: string;
+    title: string;
+    message?: string;
+    metadata?: Record<string, any>;
+  }
+) {
+  const supabase = getSupabaseClient();
+  const body = payload.message || "";
+  const meta = payload.metadata ? JSON.stringify(payload.metadata) : undefined;
+  const dataPayload: Record<string, string> = {
+    kind: payload.kind,
+  };
+  if (meta) dataPayload.meta = meta;
+  const tokens = await fetchPushTokens(userId);
+  await invokeFunctionWithAuth("send-fcm", {
+    notification: { title: payload.title, body },
+    data: dataPayload,
+    tokens,
+  });
 }
 
 export async function updateNotificationRead(
@@ -224,6 +326,20 @@ export async function updateNotificationRead(
     .update({ read_at: read ? new Date().toISOString() : null })
     .eq("id", notificationId)
     .eq("owner_id", userId);
+  if (error) throw error;
+}
+
+export async function markAllNotificationsRead(userId: string, petId?: string) {
+  const supabase = getSupabaseClient();
+  let query = supabase
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("owner_id", userId)
+    .is("read_at", null);
+  if (petId) {
+    query = query.or(`pet_id.is.null,pet_id.eq.${petId}`);
+  }
+  const { error } = await query;
   if (error) throw error;
 }
 
@@ -394,6 +510,7 @@ export async function fetchWellnessInputs(userId: string, petId: string) {
   return {
     preventive: data.preventive || undefined,
     medical: data.medical || undefined,
+    score: typeof data.score === "number" ? data.score : undefined,
     updatedAt: data.updated_at || undefined,
   };
 }
@@ -405,6 +522,7 @@ export async function upsertWellnessInputs(userId: string, petId: string, inputs
     pet_id: petId,
     preventive: inputs.preventive || null,
     medical: inputs.medical || null,
+    score: typeof inputs.score === "number" ? inputs.score : null,
     updated_at: new Date().toISOString(),
   };
   const { data, error } = await supabase
@@ -412,6 +530,56 @@ export async function upsertWellnessInputs(userId: string, petId: string, inputs
     .upsert(payload, { onConflict: "owner_id,pet_id" })
     .select()
     .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function fetchWeightHistory(userId: string, petId: string) {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("pet_weight_history")
+    .select("weight, recorded_at, source")
+    .eq("owner_id", userId)
+    .eq("pet_id", petId)
+    .order("recorded_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((row: any) => ({
+    weight: Number(row.weight),
+    date: row.recorded_at,
+    source: row.source || undefined,
+  }));
+}
+
+export async function upsertWeightHistory(
+  userId: string,
+  petId: string,
+  entries: Array<{ weight: number; date: string; source?: string }>
+) {
+  if (!entries.length) return [];
+  const supabase = getSupabaseClient();
+  const deduped = new Map<string, { weight: number; date: string; source?: string }>();
+  entries.forEach((entry) => {
+    const weightValue = Number(entry.weight);
+    if (!Number.isFinite(weightValue)) return;
+    const parsedDate = new Date(entry.date);
+    if (Number.isNaN(parsedDate.getTime())) return;
+    const dateIso = parsedDate.toISOString();
+    const key = `${dateIso}|${weightValue}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, { weight: weightValue, date: dateIso, source: entry.source });
+    }
+  });
+  const payload = Array.from(deduped.values()).map((entry) => ({
+    owner_id: userId,
+    pet_id: petId,
+    weight: entry.weight,
+    recorded_at: entry.date,
+    source: entry.source || null,
+  }));
+  const { data, error } = await supabase
+    .from("pet_weight_history")
+    .upsert(payload, { onConflict: "owner_id,pet_id,recorded_at,weight" })
+    .select();
   if (error) throw error;
   return data;
 }
@@ -711,11 +879,49 @@ export async function upsertUserProfile(userId: string, profile: any) {
     owner_name: profile.ownerName || null,
     owner_phone: profile.ownerPhone || null,
     owner_email: profile.ownerEmail || null,
+    owner_legal_first_name: profile.ownerLegalFirstName || null,
+    owner_legal_last_name: profile.ownerLegalLastName || null,
+    owner_preferred_first_name: profile.ownerPreferredFirstName || null,
+    owner_residential_address: profile.ownerResidentialAddress || null,
+    owner_mailing_address: profile.ownerMailingAddress || null,
+    owner_emergency_contact: profile.ownerEmergencyContact || null,
     updated_at: new Date().toISOString(),
   };
   const { data, error } = await supabase.from("user_profiles").upsert(payload).select().single();
   if (error) throw error;
   return data;
+}
+
+export async function upsertPushToken(
+  userId: string,
+  payload: { deviceId: string; token: string; platform: string }
+) {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("push_tokens")
+    .upsert({
+      owner_id: userId,
+      device_id: payload.deviceId,
+      expo_push_token: payload.token,
+      platform: payload.platform,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "owner_id,device_id" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function sendTestPush(userId: string) {
+  const tokens = await fetchPushTokens(userId);
+  if (!tokens.length) {
+    throw new Error("No push tokens found for this user.");
+  }
+  await invokeFunctionWithAuth("send-fcm", {
+    notification: { title: "Meropaw Test", body: "Push is working!" },
+    data: { type: "test" },
+    tokens,
+  });
 }
 
 export type PetProfileExtras = {

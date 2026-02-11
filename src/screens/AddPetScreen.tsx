@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { View, Text, TouchableOpacity, Alert, ScrollView, Image, TextInput, StyleSheet, ActivityIndicator, Platform } from "react-native";
 import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
@@ -11,6 +11,7 @@ import { usePets } from "@src/contexts/PetContext";
 import { useMemories } from "@src/contexts/MemoriesContext";
 import { useNavigation } from "@src/contexts/NavigationContext";
 import { compressImage } from "@src/utils/imageCompression";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 type AddPetStep = 'intro' | 'petName' | 'bio' | 'photos' | 'profile';
 
@@ -21,6 +22,7 @@ type AddPetPhoto = {
 };
 
 const MAX_PHOTOS = 4;
+const ADD_PET_DRAFT_KEY = "@kasper_add_pet_draft";
 
 const STEP_META: Record<AddPetStep, { title: string; subtitle: string; icon: keyof typeof Ionicons.glyphMap; gradient: [string, string] }> = {
   intro: {
@@ -75,9 +77,74 @@ export default function AddPetScreen() {
   const [isCompleted, setIsCompleted] = useState(false);
   const [isMediaProcessing, setIsMediaProcessing] = useState(false);
   const [mediaProcessingLabel, setMediaProcessingLabel] = useState("");
+  const [isRestoringDraft, setIsRestoringDraft] = useState(true);
   const steps: AddPetStep[] = ["intro", "petName", "bio", "photos", "profile"];
   const currentIndex = steps.indexOf(currentStep);
   const progressPercent = Math.round(((currentIndex + 1) / steps.length) * 100);
+  useEffect(() => {
+    const restoreDraft = async () => {
+      try {
+        const stored = await AsyncStorage.getItem(ADD_PET_DRAFT_KEY);
+        if (!stored) return;
+        const draft = JSON.parse(stored);
+        if (draft.petName) setPetName(draft.petName);
+        if (draft.bio) setBio(draft.bio);
+        if (Array.isArray(draft.photos)) setPhotos(draft.photos);
+        if (draft.profilePhotoUri) setProfilePhotoUri(draft.profilePhotoUri);
+        if (draft.breed) setBreed(draft.breed);
+        if (draft.color) setColor(draft.color);
+        if (draft.microchip) setMicrochip(draft.microchip);
+        if (draft.allergies) setAllergies(draft.allergies);
+        if (draft.birthDate) {
+          const parsed = new Date(draft.birthDate);
+          if (!Number.isNaN(parsed.getTime())) setBirthDate(parsed);
+        }
+        if (draft.currentStep && steps.includes(draft.currentStep)) {
+          setCurrentStep(draft.currentStep);
+        }
+      } catch (error) {
+        console.error("AddPetScreen: Failed to restore draft", error);
+      } finally {
+        setIsRestoringDraft(false);
+      }
+    };
+    restoreDraft();
+  }, []);
+
+  useEffect(() => {
+    if (isRestoringDraft || isCompleted) return;
+    const timer = setTimeout(() => {
+      const payload = {
+        currentStep,
+        petName,
+        bio,
+        photos,
+        profilePhotoUri,
+        breed,
+        birthDate: birthDate ? birthDate.toISOString() : null,
+        color,
+        microchip,
+        allergies,
+      };
+      AsyncStorage.setItem(ADD_PET_DRAFT_KEY, JSON.stringify(payload)).catch((error) => {
+        console.error("AddPetScreen: Failed to save draft", error);
+      });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [
+    currentStep,
+    petName,
+    bio,
+    photos,
+    profilePhotoUri,
+    breed,
+    birthDate,
+    color,
+    microchip,
+    allergies,
+    isRestoringDraft,
+    isCompleted,
+  ]);
   const stepMeta = useMemo(() => {
     const meta = STEP_META[currentStep];
     const displayName = petName.trim() || "your pet";
@@ -458,6 +525,9 @@ export default function AddPetScreen() {
             [{ text: "Let's Go!", style: "default" }]
           );
         }, 300);
+      });
+      AsyncStorage.removeItem(ADD_PET_DRAFT_KEY).catch((error) => {
+        console.error("AddPetScreen: Failed to clear draft", error);
       });
     } catch (error) {
       console.error("AddPetScreen: Error adding pet:", error);

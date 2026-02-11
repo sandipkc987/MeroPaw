@@ -1,0 +1,201 @@
+
+KASPER PETIFY – ROBUST WELLNESS SCORE (V2)
+=========================================
+
+This document defines a robust, explainable, rules-based Wellness Score
+designed for consumer pet health tracking.
+
+GOALS
+-----
+- Keep existing UI and score weights exactly the same:
+  * Preventive Care: 0–50
+  * Medical History: 0–30
+  * Weight & Check-ins: 0–20
+  * Total: 0–100
+- Reduce false positives and noisy score changes
+- Be trend-aware rather than single-point sensitive
+- Remain fully explainable (no black-box ML)
+- Be safe, conservative, and trust-preserving
+
+WHAT THE WELLNESS SCORE REPRESENTS
+----------------------------------
+This score is a Wellness & Care Risk Index, not a diagnosis.
+
+It summarizes:
+- Preventive care adherence
+- Stability of known medical history
+- Recent weight trends and monitoring consistency
+
+It is designed to answer:
+“How stable and well-managed is this pet’s health right now, based on
+available data?”
+
+------------------------------------------------------------
+HELPER FUNCTIONS
+------------------------------------------------------------
+
+clamp(n, min, max)
+- Ensures all scores stay within bounds
+
+daysBetween(dateA, dateB)
+- Computes difference in days, avoids month-rounding cliffs
+
+median(array)
+- Used for robust baseline calculations (outlier-resistant)
+
+normalizePercent(value)
+- Normalizes medication compliance whether stored as:
+  * 0–1 (fraction)
+  * 0–100 (percentage)
+
+------------------------------------------------------------
+1) PREVENTIVE CARE SCORE (0–50)
+------------------------------------------------------------
+
+What it measures:
+- Whether core preventive actions are up to date
+
+Inputs:
+- vaccinesUpToDate (boolean)
+- parasiteControlCurrent (boolean)
+Optional future inputs:
+- vaccinesDueDate (ISO date)
+- parasiteControlDueDate (ISO date)
+
+Scoring logic:
+- Vaccines: up to 35 points
+- Parasite control: up to 15 points
+
+V2 improvements:
+- If only booleans exist → behaves exactly like v1
+- If due dates exist → overdue items decay smoothly instead of
+  dropping to zero immediately
+
+Why this is robust:
+- No sudden score cliffs
+- Future-proof for time-based prevention tracking
+
+------------------------------------------------------------
+2) MEDICAL HISTORY SCORE (0–30)
+------------------------------------------------------------
+
+What it measures:
+- Baseline medical risk and stability
+
+Inputs:
+- chronicConditionsCount
+- medicationCompliance (0–1 OR 0–100)
+- recentSymptomsLogged (count in last 30 days)
+
+Scoring logic:
+Start at 30 points, subtract penalties:
+
+A) Chronic conditions
+- 5 points per condition
+- Capped at 15 points max
+
+B) Medication compliance
+- Normalized to percentage
+- Penalty = (100 - compliance) / 10
+- Capped at 10 points
+
+C) Symptoms
+- First symptom is free (encourages logging)
+- Each additional symptom subtracts 1 point
+- Capped at 5 points
+
+Why this is robust:
+- Fixes unit ambiguity bug (0–1 vs 0–100)
+- Does not punish responsible symptom logging
+- Penalties are smooth and bounded
+
+------------------------------------------------------------
+3) WEIGHT & CHECK-INS SCORE (0–20)
+------------------------------------------------------------
+
+What it measures:
+- Monitoring consistency
+- Weight stability over time
+
+Inputs:
+- Weight history: [{ weight, date, source }]
+
+V2 scoring uses TWO subcomponents:
+
+A) Recency score (0–10)
+- Based on days since last recorded weight
+- Smooth linear decay
+- No rounding cliffs
+
+B) Stability score (0–10)
+- Latest weight compared to a ROBUST BASELINE
+- Baseline = median of recent historical weights
+- Uses multiple points, not just the last two
+
+Stability tiers:
+- <3% change → 10 points
+- <6% → 8 points
+- <10% → 5 points
+- <15% → 2 points
+- ≥15% → 0 points
+
+Why this is robust:
+- Resistant to single bad weigh-ins
+- Resistant to long gaps between measurements
+- Encourages regular tracking without panic
+
+------------------------------------------------------------
+4) TOTAL WELLNESS SCORE (0–100)
+------------------------------------------------------------
+
+Total = Preventive (0–50)
+      + Medical (0–30)
+      + Weight (0–20)
+
+Properties:
+- Fully explainable
+- Stable under small data changes
+- Sensitive to trends, not noise
+
+------------------------------------------------------------
+WEIGHT ALERTS – ROBUST V2 LOGIC
+------------------------------------------------------------
+
+Problem with v1:
+- Alerts triggered by only two weights
+- No time-window requirement
+- High false-positive rate
+
+V2 alert requirements:
+1) At least 3 total weight entries
+2) Latest weight is recent (≤14 days old)
+3) Baseline exists (median of last ~60 days)
+4) Percent change exceeds threshold (default 5%)
+5) Change is confirmed by a second recent measurement
+   OR user is prompted to re-weigh
+
+Alert decision outcomes:
+- Alert sent: confirmed deviation from baseline
+- No alert: insufficient data, old data, or noise
+- Optional soft message: “Re-weigh to confirm change”
+
+Why this is robust:
+- Eliminates alerts caused by:
+  * long historical gaps
+  * one-off bad readings
+  * format/source inconsistencies
+
+------------------------------------------------------------
+SUMMARY
+------------------------------------------------------------
+
+This V2 Wellness Score:
+- Preserves your existing UI and mental model
+- Is safer and more stable than v1
+- Reduces user anxiety and alert fatigue
+- Builds trust through explainability
+- Provides a strong foundation for future ML enhancement
+
+This score is best described as:
+“A conservative, explainable index of pet health stability and care
+adherence.”

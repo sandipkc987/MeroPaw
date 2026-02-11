@@ -1,0 +1,81 @@
+Meropaw Push Notifications Setup (Firebase + Supabase + App)
+
+1) Firebase (FCM) setup
+   - Create Firebase project.
+   - Register Android app using package name: com.meropaw.app
+   - Download google-services.json.
+   - (iOS later) Register iOS app, download GoogleService-Info.plist.
+
+2) Project files
+   - Place google-services.json in: firebase/google-services.json
+   - app.json:
+       expo.android.googleServicesFile = "./firebase/google-services.json"
+       expo.plugins = ["@react-native-firebase/app"]
+   - (iOS later) Add:
+       expo.ios.googleServicesFile = "./firebase/GoogleService-Info.plist"
+
+3) Dependencies
+   - npm install @react-native-firebase/app @react-native-firebase/messaging
+
+4) Build dev client (Android)
+   - eas build -p android --profile development
+   - Install the APK on device.
+
+5) Supabase DB
+   - Run SUPABASE_PUSH_TOKENS.sql (push_tokens table + RLS).
+
+6) Supabase secret (Edge Function)
+   - Add secret: FIREBASE_SERVICE_ACCOUNT_JSON
+   - Value: Firebase service account JSON (Project Settings -> Service Accounts -> Generate key)
+
+7) Supabase Edge Function (send push)
+   - Function: supabase/functions/send-fcm/index.ts
+   - Deploy: supabase functions deploy send-fcm
+   - Ensure function can read FIREBASE_SERVICE_ACCOUNT_JSON secret.
+
+8) App: token registration + storage
+   - File: src/services/pushNotifications.ts
+     - registerDeviceForRemoteMessages()
+     - requestPermission()
+     - getToken()
+     - upsert push token to Supabase
+   - File: src/contexts/AuthContext.tsx
+     - registerPushToken(user.id) on login
+     - subscribeToTokenRefresh(user.id)
+   - File: src/services/supabaseData.ts
+     - upsertPushToken -> writes to push_tokens.expo_push_token
+
+9) Auto-send push when in-app notification is created
+   - File: src/services/supabaseData.ts
+     - insertNotification(...) now calls send-fcm via supabase.functions.invoke
+     - Tokens fetched from push_tokens for owner_id
+
+10) Verify
+   - Check table: select * from push_tokens order by updated_at desc;
+   - Test by invoking send-fcm with token.
+   - Push shows in system tray when app is backgrounded.
+
+11) Test push + admin tooling
+   - Admins see "Send test push" in Notifications settings.
+   - Admin access is allowed for @meropaw.com and sandipkc987@gmail.com.
+   - The test button calls send-fcm with tokens[] and shows a success/failure alert.
+
+12) Edge function auth behavior
+   - Dashboard setting "Verify JWT with legacy secret" can be OFF during testing.
+   - If ON, send-fcm still validates JWT inside the function.
+   - If you see Invalid JWT, the dashboard toggle is ON or the app is sending a stale JWT.
+
+13) Handling invalid FCM tokens (UNREGISTERED)
+   - FCM may return UNREGISTERED after reinstall/clear data.
+   - send-fcm now deletes those tokens from push_tokens.
+   - Fix: delete user tokens, reopen app, send test push again.
+
+14) Common errors
+   - Invalid JWT: dashboard JWT toggle ON or stale token; reload app and sign in again.
+   - Missing Authorization header: old function version still deployed.
+   - UNREGISTERED: device token is invalid; delete and re-register.
+
+Notes
+   - Foreground push banners typically do not show on Android; use in-app toast if needed.
+   - iOS push requires Apple Developer Program + APNs setup.
+

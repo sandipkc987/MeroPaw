@@ -3,6 +3,8 @@ import { Platform } from "react-native";
 import storage from "@src/utils/storage";
 import { getSupabaseClient } from "@src/services/supabaseClient";
 import { insertNotification } from "@src/services/supabaseData";
+import { registerPushToken, subscribeToTokenRefresh } from "@src/services/pushNotifications";
+import { isAdminEmail } from "@src/utils/admin";
 
 interface StoredPhotoDetail {
   uri?: string;
@@ -45,6 +47,7 @@ interface AuthContextType {
   isLoading: boolean;
   isBootstrapping: boolean;
   hasCompletedOnboarding: boolean;
+  isAdmin: boolean;
   login: (email: string, password: string) => Promise<void>;
   requestEmailOtp: (email: string) => Promise<void>;
   verifyEmailOtp: (email: string, code: string, password: string) => Promise<void>;
@@ -193,6 +196,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     
     checkStoredUser();
   }, []);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    registerPushToken(user.id);
+    const unsubscribe = subscribeToTokenRefresh(user.id);
+    return () => {
+      unsubscribe?.();
+    };
+  }, [user?.id]);
 
   const login = async (email: string, password: string) => {
     console.log("AuthContext.login: Starting login with email:", email);
@@ -528,6 +540,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     isLoading,
     isBootstrapping,
     hasCompletedOnboarding,
+    isAdmin: isAdminEmail(user?.email),
     login,
     requestEmailOtp,
     verifyEmailOtp,

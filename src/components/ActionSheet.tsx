@@ -20,9 +20,10 @@ type ActionSheetProps = {
   options: ActionSheetOption[];
   onClose: () => void;
   variant?: "list" | "quick";
+  footerText?: string;
 };
 
-export default function ActionSheet({ visible, title, options, onClose, variant = "list" }: ActionSheetProps) {
+export default function ActionSheet({ visible, title, options, onClose, variant = "list", footerText }: ActionSheetProps) {
   const { colors } = useTheme();
   if (!visible) return null;
   const isCentered = variant === "quick";
@@ -78,15 +79,15 @@ export default function ActionSheet({ visible, title, options, onClose, variant 
                   flexDirection: "row",
                   alignItems: "center",
                   justifyContent: "space-between",
-                  marginBottom: SPACING.lg,
+                  marginBottom: SPACING.md,
                 }}
               >
                 <View>
-                  <Text style={{ ...TYPOGRAPHY.xl, fontWeight: "700", color: colors.text }}>
+                  <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text, letterSpacing: -0.2 }}>
                     {title || "Quick Update"}
                   </Text>
                   <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: 2 }}>
-                    Choose an action
+                    Choose how you want to add a record
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -105,6 +106,13 @@ export default function ActionSheet({ visible, title, options, onClose, variant 
                   <Ionicons name="close" size={18} color={colors.text} />
                 </TouchableOpacity>
               </View>
+              <View
+                style={{
+                  height: 1,
+                  backgroundColor: colors.borderLight,
+                  marginBottom: SPACING.lg,
+                }}
+              />
               <ScrollView showsVerticalScrollIndicator={false}>
               {options.map((option, idx) => (
                 <TouchableOpacity
@@ -152,9 +160,11 @@ export default function ActionSheet({ visible, title, options, onClose, variant 
                     <Text style={{ ...TYPOGRAPHY.base, fontWeight: "600", color: colors.text }}>
                       {option.label}
                     </Text>
-                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
-                      {option.subtitle || "Quick action"}
-                    </Text>
+                    {option.subtitle ? (
+                      <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: 2 }}>
+                        {option.subtitle}
+                      </Text>
+                    ) : null}
                   </View>
                   <View style={{
                     width: 28,
@@ -171,6 +181,11 @@ export default function ActionSheet({ visible, title, options, onClose, variant 
                 </TouchableOpacity>
               ))}
               </ScrollView>
+              {footerText ? (
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.sm }}>
+                  {footerText}
+                </Text>
+              ) : null}
             </>
           ) : (
             <>

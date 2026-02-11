@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { View, ScrollView } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Card, Row, Divider, SectionTitle } from "@src/components/UI";
@@ -6,19 +6,17 @@ import Select from "@src/components/Select";
 import { SPACING } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import ScreenHeader from "@src/components/ScreenHeader";
+import { useNavigation } from "@src/contexts/NavigationContext";
 
 const SETTINGS_KEY = "@kasper_settings";
 
 export default function AppearancePreferencesScreen() {
   const { themeMode, setTheme: setAppTheme } = useTheme();
+  const { goBack, canGoBack, setActiveScreen, setActiveTab } = useNavigation();
   const [theme, setTheme] = useState(themeMode === "system" ? "light" : themeMode);
   const [language, setLanguage] = useState("en");
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     try {
       const stored = await AsyncStorage.getItem(SETTINGS_KEY);
       if (stored) {
@@ -29,9 +27,9 @@ export default function AppearancePreferencesScreen() {
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
-  };
+  }, []);
 
-  const saveSettings = async () => {
+  const saveSettings = useCallback(async () => {
     try {
       const stored = await AsyncStorage.getItem(SETTINGS_KEY);
       const settings = stored ? JSON.parse(stored) : {};
@@ -41,14 +39,18 @@ export default function AppearancePreferencesScreen() {
     } catch (error) {
       console.error("Failed to save settings:", error);
     }
-  };
+  }, [theme, language]);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
       saveSettings();
     }, 500);
     return () => clearTimeout(timer);
-  }, [theme, language]);
+  }, [saveSettings]);
 
   useEffect(() => {
     setAppTheme(theme as "light" | "dark");
@@ -56,7 +58,18 @@ export default function AppearancePreferencesScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: "transparent" }}>
-      <ScreenHeader title="Appearance & Language" />
+      <ScreenHeader
+        title=""
+        variant="stacked"
+        onBackPress={() => {
+          if (canGoBack) {
+            goBack();
+            return;
+          }
+          setActiveScreen(null);
+          setActiveTab("profile");
+        }}
+      />
       <ScrollView 
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}

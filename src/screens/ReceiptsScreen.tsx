@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, Image } from "react-native";
+import { View, Text, ScrollView, TouchableOpacity, Image, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import ScreenHeader from "@src/components/ScreenHeader";
 import { Card, Button } from "@src/components/UI";
@@ -27,6 +27,9 @@ export default function ReceiptsScreen() {
   const { user } = useAuth();
   const [receipts, setReceipts] = useState<ExpenseReceipt[]>([]);
   const [selectedReceipt, setSelectedReceipt] = useState<ExpenseReceipt["receipt"] | null>(null);
+  const handleExport = (format: "csv" | "pdf") => {
+    Alert.alert("Export receipts", `We'll add ${format.toUpperCase()} export soon.`);
+  };
 
   useEffect(() => {
     const loadReceipts = async () => {

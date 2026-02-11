@@ -70,10 +70,9 @@ function AppContent() {
   const { colors, isDark } = useTheme();
   const auth = useAuth();
   const { isAuthenticated, isLoading, isBootstrapping, hasCompletedOnboarding, user, needsEmailVerification } = auth;
-  const { activeScreen, setActiveScreen, triggerAddReminder, navHidden } = useNavigation();
+  const { activeScreen, setActiveScreen, triggerAddReminder, navHidden, activeTab, setActiveTab } = useNavigation();
   const { getActivePet } = usePets();
   const activePet = getActivePet();
-  const [activeTab, setActiveTab] = useState("home");
   const [showAddModal, setShowAddModal] = useState(false);
   const fontsLoaded = useInstagramSansFonts();
   const [forceUpdate, setForceUpdate] = useState(0);

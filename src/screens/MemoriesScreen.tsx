@@ -527,6 +527,9 @@ export default function MemoriesScreen() {
         title="Memories"
         actionIcon="paw"
         onActionPress={() => setShowMediaPicker(true)}
+        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        paddingTop={SPACING.lg}
+        paddingBottom={SPACING.lg}
       />
       
       <ScrollView 

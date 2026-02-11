@@ -1,13 +1,17 @@
-import React, { useState, useEffect } from "react";
-import { View, Text, ScrollView, Switch, Pressable, StyleSheet, Alert } from "react-native";
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import { View, Text, ScrollView, Pressable, StyleSheet, Alert } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { Card, Row, Divider, SectionTitle } from "@src/components/UI";
+import { Card, Row, Divider, SectionTitle, Toggle } from "@src/components/UI";
 import Select from "@src/components/Select";
 import Stepper from "@src/components/Stepper";
 import type { Option } from "@src/components/Select";
 import { SPACING, TYPOGRAPHY } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import ScreenHeader from "@src/components/ScreenHeader";
+import { useNavigation } from "@src/contexts/NavigationContext";
+import { useAuth } from "@src/contexts/AuthContext";
+import { usePets } from "@src/contexts/PetContext";
+import { insertNotification } from "@src/services/supabaseData";
 
 const SETTINGS_KEY = "@kasper_settings";
 const WELLNESS_OPTIONS: Option[] = [
@@ -21,17 +25,25 @@ function clamp(n: number, min = 1, max = 15) {
 
 export default function HealthWellnessSettingsScreen() {
   const { colors } = useTheme();
+  const { goBack, canGoBack, setActiveScreen, setActiveTab } = useNavigation();
+  const { user } = useAuth();
+  const { getActivePet } = usePets();
+  const activePet = getActivePet();
   const [weightAlert, setWeightAlert] = useState(true);
   const [weightThreshold, setWeightThreshold] = useState(5);
   const [wellnessUpdates, setWellnessUpdates] = useState(true);
   const [wellnessCadence, setWellnessCadence] = useState("weekly");
   const [vetSync, setVetSync] = useState(false);
+  const initializedRef = useRef(false);
+  const prevRef = useRef({
+    weightAlert,
+    weightThreshold,
+    wellnessUpdates,
+    wellnessCadence,
+    vetSync,
+  });
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
-  const loadSettings = async () => {
+  const loadSettings = useCallback(async () => {
     try {
       const stored = await AsyncStorage.getItem(SETTINGS_KEY);
       if (stored) {
@@ -45,9 +57,9 @@ export default function HealthWellnessSettingsScreen() {
     } catch (error) {
       console.error("Failed to load settings:", error);
     }
-  };
+  }, []);
 
-  const saveSettings = async () => {
+  const saveSettings = useCallback(async () => {
     try {
       const stored = await AsyncStorage.getItem(SETTINGS_KEY);
       const settings = stored ? JSON.parse(stored) : {};
@@ -60,14 +72,76 @@ export default function HealthWellnessSettingsScreen() {
     } catch (error) {
       console.error("Failed to save settings:", error);
     }
-  };
+  }, [weightAlert, weightThreshold, wellnessUpdates, wellnessCadence, vetSync]);
+
+  useEffect(() => {
+    loadSettings();
+  }, [loadSettings]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
       saveSettings();
     }, 500);
     return () => clearTimeout(timer);
-  }, [weightAlert, weightThreshold, wellnessUpdates, wellnessCadence, vetSync]);
+  }, [saveSettings]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+      prevRef.current = {
+        weightAlert,
+        weightThreshold,
+        wellnessUpdates,
+        wellnessCadence,
+        vetSync,
+      };
+      return;
+    }
+    const prev = prevRef.current;
+    const petId = activePet?.id;
+
+    if (weightAlert && !prev.weightAlert) {
+      insertNotification(user.id, {
+        petId,
+        kind: "health",
+        title: "Weight change alerts enabled",
+        message: `We'll notify you when weight changes by ±${weightThreshold}%.`,
+      }).catch(() => {});
+    }
+    if (weightThreshold !== prev.weightThreshold && weightAlert) {
+      insertNotification(user.id, {
+        petId,
+        kind: "health",
+        title: "Weight alert sensitivity updated",
+        message: `Threshold set to ±${weightThreshold}%.`,
+      }).catch(() => {});
+    }
+    if (wellnessUpdates && !prev.wellnessUpdates) {
+      insertNotification(user.id, {
+        petId,
+        kind: "health",
+        title: "Wellness updates enabled",
+        message: "You'll receive wellness summaries.",
+      }).catch(() => {});
+    }
+    if (vetSync && !prev.vetSync) {
+      insertNotification(user.id, {
+        petId,
+        kind: "health",
+        title: "Vet appointment sync enabled",
+        message: "We’ll notify you about upcoming vet visits.",
+      }).catch(() => {});
+    }
+
+    prevRef.current = {
+      weightAlert,
+      weightThreshold,
+      wellnessUpdates,
+      wellnessCadence,
+      vetSync,
+    };
+  }, [weightAlert, weightThreshold, wellnessUpdates, wellnessCadence, vetSync, user?.id, activePet?.id]);
 
   function handleConnectCalendar() {
     setVetSync(true);
@@ -80,7 +154,18 @@ export default function HealthWellnessSettingsScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Health & Wellness" />
+      <ScreenHeader
+        title=""
+        variant="stacked"
+        onBackPress={() => {
+          if (canGoBack) {
+            goBack();
+            return;
+          }
+          setActiveScreen(null);
+          setActiveTab("profile");
+        }}
+      />
       <ScrollView 
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
@@ -92,11 +177,9 @@ export default function HealthWellnessSettingsScreen() {
             label="Weight Change Alerts"
             hint={`Trigger when ±${weightThreshold}% change is detected`}
             control={
-              <Switch 
-                value={weightAlert} 
-                onValueChange={setWeightAlert} 
-                trackColor={{ false: colors.borderLight, true: colors.accent }} 
-                thumbColor={colors.white} 
+              <Toggle
+                value={weightAlert}
+                onValueChange={setWeightAlert}
               />
             }
           />
@@ -110,11 +193,9 @@ export default function HealthWellnessSettingsScreen() {
             label="Wellness Score Updates"
             hint={wellnessUpdates ? `Delivery: ${wellnessCadence === "weekly" ? "Weekly" : "Monthly"}` : "Disabled"}
             control={
-              <Switch 
-                value={wellnessUpdates} 
-                onValueChange={setWellnessUpdates} 
-                trackColor={{ false: colors.borderLight, true: colors.accent }} 
-                thumbColor={colors.white} 
+              <Toggle
+                value={wellnessUpdates}
+                onValueChange={setWellnessUpdates}
               />
             }
           />
@@ -133,11 +214,9 @@ export default function HealthWellnessSettingsScreen() {
             label="Vet Appointment Sync"
             hint={vetSync ? "Connected to Calendar" : "Sync your device calendar for upcoming vet visits"}
             control={
-              <Switch 
-                value={vetSync} 
-                onValueChange={setVetSync} 
-                trackColor={{ false: colors.borderLight, true: colors.accent }} 
-                thumbColor={colors.white} 
+              <Toggle
+                value={vetSync}
+                onValueChange={setVetSync}
               />
             }
           />

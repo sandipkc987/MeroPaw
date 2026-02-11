@@ -1,0 +1,570 @@
+Wellness Score - Compiled Logic and Code (V2)
+=============================================
+
+This file captures the full wellness score logic (inputs, scoring math,
+weight history derivation, persistence, and notifications) from the app.
+
+Primary sources:
+- src/screens/HealthScreen.tsx
+- src/services/supabaseData.ts
+
+
+1) Score Components and Helpers (HealthScreen)
+-----------------------------------------------
+The wellness score is composed of three parts:
+- Preventive Care (0..50)
+- Medical History (0..30)
+- Weight & Check-ins (0..20)
+
+Code:
+
+// src/screens/HealthScreen.tsx
+const clamp = (n: number, min = 0, max = 100) => Math.max(min, Math.min(max, n));
+const MS_PER_DAY = 1000 * 60 * 60 * 24;
+const WEIGHT_BASELINE_WINDOW_DAYS = 60;
+const WEIGHT_RECENCY_WINDOW_DAYS = 60;
+const WEIGHT_ALERT_RECENT_DAYS = 14;
+
+const daysBetween = (dateA: string | Date, dateB: string | Date) => {
+  const a = new Date(dateA).getTime();
+  const b = new Date(dateB).getTime();
+  if (Number.isNaN(a) || Number.isNaN(b)) return Number.POSITIVE_INFINITY;
+  return Math.abs(a - b) / MS_PER_DAY;
+};
+
+const median = (values: number[]) => {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 0) {
+    return (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  return sorted[mid];
+};
+
+const normalizePercent = (value: number) => {
+  if (!Number.isFinite(value)) return 0;
+  if (value <= 1) return clamp(value * 100, 0, 100);
+  return clamp(value, 0, 100);
+};
+
+type PreventiveCare = {
+  vaccinesUpToDate: boolean;
+  parasiteControlCurrent: boolean;
+  vaccinesDueDate?: string;
+  parasiteControlDueDate?: string;
+};
+
+type MedicalHistory = {
+  chronicConditionsCount: number;
+  medicationCompliance: number;
+  recentSymptomsLogged: number;
+};
+
+type WeightStatus = {
+  lastRecordedDaysAgo: number;
+  percentChange: number;
+  hasBaseline: boolean;
+};
+
+type WeightEntry = {
+  weight: number;
+  date: string;
+  source?: "manual" | "pdf";
+};
+
+const scorePreventive = (p: PreventiveCare) => {
+  const now = new Date();
+  const decayOverdue = (dueDate?: string, maxPoints = 0) => {
+    if (!dueDate) return null;
+    const due = new Date(dueDate);
+    if (Number.isNaN(due.getTime())) return null;
+    const daysOverdue = (now.getTime() - due.getTime()) / MS_PER_DAY;
+    if (daysOverdue <= 0) return maxPoints;
+    const decayWindowDays = 90;
+    return clamp(maxPoints * (1 - daysOverdue / decayWindowDays), 0, maxPoints);
+  };
+
+  let vaccinesScore = p.vaccinesUpToDate ? 35 : 0;
+  const vaccinesDueScore = decayOverdue(p.vaccinesDueDate, 35);
+  if (vaccinesDueScore != null) vaccinesScore = vaccinesDueScore;
+
+  let parasiteScore = p.parasiteControlCurrent ? 15 : 0;
+  const parasiteDueScore = decayOverdue(p.parasiteControlDueDate, 15);
+  if (parasiteDueScore != null) parasiteScore = parasiteDueScore;
+
+  return clamp(vaccinesScore + parasiteScore, 0, 50);
+};
+
+const scoreMedical = (m: MedicalHistory) => {
+  let score = 30 - Math.min(m.chronicConditionsCount * 5, 15);
+  const compliancePct = normalizePercent(m.medicationCompliance);
+  const compliancePenalty = clamp((100 - compliancePct) / 10, 0, 10);
+  score -= compliancePenalty;
+  const symptomPenalty = clamp(Math.max(m.recentSymptomsLogged - 1, 0), 0, 5);
+  score -= symptomPenalty;
+  return clamp(score, 0, 30);
+};
+
+const scoreWeight = (w: WeightStatus) => {
+  const recency = Number.isFinite(w.lastRecordedDaysAgo)
+    ? clamp(10 * (1 - w.lastRecordedDaysAgo / WEIGHT_RECENCY_WINDOW_DAYS), 0, 10)
+    : 0;
+  if (!w.hasBaseline) return clamp(recency, 0, 20);
+
+  const pct = Math.abs(w.percentChange);
+  let stability = 0;
+  if (pct < 3) stability = 10;
+  else if (pct < 6) stability = 8;
+  else if (pct < 10) stability = 5;
+  else if (pct < 15) stability = 2;
+
+  return clamp(recency + stability, 0, 20);
+};
+
+
+2) Weight History -> Weight Metrics (HealthScreen)
+---------------------------------------------------
+Weight history is merged from Supabase and local storage, normalized,
+and then reduced to metrics that feed scoreWeight().
+
+Code:
+
+// src/screens/HealthScreen.tsx
+const [weightHistory, setWeightHistory] = useState<WeightEntry[]>([]);
+
+const normalizeWeightEntries = (entries: WeightEntry[]) => {
+  const next = entries
+    .filter((item) => Number.isFinite(item.weight))
+    .filter((item) => !Number.isNaN(new Date(item.date).getTime()));
+  const deduped = new Map<string, WeightEntry>();
+  next.forEach((item) => {
+    deduped.set(`${item.date}|${item.weight}`, item);
+  });
+  return Array.from(deduped.values()).sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+};
+
+const addWeightEntry = (entry: WeightEntry) => {
+  setWeightHistory((prev) => {
+    return normalizeWeightEntries([...prev, entry]);
+  });
+  const isValidEntry =
+    Number.isFinite(entry.weight) && !Number.isNaN(new Date(entry.date).getTime());
+  if (isValidEntry && user?.id && activePetId) {
+    upsertWeightHistory(user.id, activePetId, [entry]).catch((error) => {
+      console.warn("HealthScreen: Failed to sync weight entry", error);
+    });
+  }
+};
+
+const weightMetrics = useMemo(() => {
+  if (weightHistory.length === 0) {
+    return {
+      hasHistory: false,
+      lastRecordedDaysAgo: 999,
+      percentChange: 0,
+      hasBaseline: false,
+      baselineWeight: null as number | null,
+      baselineSampleCount: 0,
+      recentSampleCount: 0,
+      lastWeight: null as number | null,
+      previousWeight: null as number | null,
+      lastDate: null as string | null,
+    };
+  }
+  const sorted = [...weightHistory].sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+  );
+  const latest = sorted[0];
+  const previous = sorted[1];
+  const now = new Date();
+  const latestDate = new Date(latest.date);
+  const lastRecordedDaysAgo = Number.isNaN(latestDate.getTime())
+    ? 999
+    : Math.max(0, Math.round(daysBetween(now, latestDate)));
+
+  const recentWindowStart = new Date(now.getTime() - WEIGHT_BASELINE_WINDOW_DAYS * MS_PER_DAY);
+  const recent = sorted.filter((entry) => {
+    const entryDate = new Date(entry.date);
+    return !Number.isNaN(entryDate.getTime()) && entryDate >= recentWindowStart;
+  });
+  const baselineCandidates = recent.filter((entry, idx) => idx !== 0);
+  const baselineWeight = median(baselineCandidates.map((entry) => entry.weight));
+  const hasBaseline = baselineWeight != null && baselineWeight !== 0;
+  const percentChange = hasBaseline
+    ? ((latest.weight - (baselineWeight as number)) / (baselineWeight as number)) * 100
+    : 0;
+
+  return {
+    hasHistory: true,
+    lastRecordedDaysAgo,
+    percentChange,
+    hasBaseline,
+    baselineWeight,
+    baselineSampleCount: baselineCandidates.length,
+    recentSampleCount: recent.length,
+    lastWeight: latest.weight,
+    previousWeight: previous?.weight ?? null,
+    lastDate: latest.date,
+  };
+}, [weightHistory]);
+
+
+3) Total Wellness Score + Label (HealthScreen)
+-----------------------------------------------
+Total score is computed from the three components and clamped to 0..100.
+
+Code:
+
+// src/screens/HealthScreen.tsx
+const preventiveScore = useMemo(() => scorePreventive(preventive), [preventive]);
+const medicalScore = useMemo(() => scoreMedical(medical), [medical]);
+const weightScore = useMemo(
+  () => (weightMetrics.hasHistory ? scoreWeight(weightMetrics) : 0),
+  [weightMetrics]
+);
+const totalScore = useMemo(
+  () => clamp(Math.round(preventiveScore + medicalScore + weightScore), 0, 100),
+  [preventiveScore, medicalScore, weightScore]
+);
+
+const getScoreLabel = (score: number) => {
+  if (score >= 90) return { text: "Excellent", color: colors.success };
+  if (score >= 75) return { text: "Good", color: colors.accent };
+  if (score >= 60) return { text: "Fair", color: "#f59e0b" };
+  return { text: "Needs Attention", color: colors.danger };
+};
+
+const scoreLabel = useMemo(() => getScoreLabel(totalScore), [totalScore, colors]);
+
+
+4) Inputs and Persistence (HealthScreen + Supabase)
+----------------------------------------------------
+Preventive + Medical inputs are stored in Supabase via wellness_inputs.
+Weight history is stored in pet_weight_history.
+
+Load wellness inputs:
+
+// src/screens/HealthScreen.tsx
+useEffect(() => {
+  if (!user?.id || !activePetId) return;
+  const loadWellnessInputs = async () => {
+    try {
+      const remote = await fetchWellnessInputs(user.id, activePetId);
+      if (remote?.preventive) setPreventive(remote.preventive);
+      if (remote?.medical) setMedical(remote.medical);
+      if (typeof remote?.score === "number") {
+        wellnessInitialScoreRef.current = remote.score;
+      }
+      wellnessLoadRef.current.inputs = true;
+      setWellnessHydrated(wellnessLoadRef.current.inputs && wellnessLoadRef.current.weight);
+    } catch (error) {
+      console.error("HealthScreen: Failed to load wellness inputs:", error);
+    }
+  };
+  loadWellnessInputs();
+}, [user?.id, activePetId]);
+
+Save wellness inputs:
+
+// src/screens/HealthScreen.tsx
+useEffect(() => {
+  if (!user?.id || !activePetId) return;
+  if (!wellnessHydrated) return;
+  const timer = setTimeout(() => {
+    upsertWellnessInputs(user.id, activePetId, {
+      preventive,
+      medical,
+      score: totalScore,
+    }).catch((error) => {
+      console.error("HealthScreen: Failed to save wellness inputs:", error);
+    });
+  }, 500);
+  return () => clearTimeout(timer);
+}, [user?.id, activePetId, preventive, medical, totalScore, wellnessHydrated]);
+
+Supabase service calls:
+
+// src/services/supabaseData.ts
+export async function fetchWellnessInputs(userId: string, petId: string) {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("wellness_inputs")
+    .select("*")
+    .eq("owner_id", userId)
+    .eq("pet_id", petId)
+    .single();
+  if (error && error.code !== "PGRST116") throw error;
+  if (!data) return null;
+  return {
+    preventive: data.preventive || undefined,
+    medical: data.medical || undefined,
+    score: typeof data.score === "number" ? data.score : undefined,
+    updatedAt: data.updated_at || undefined,
+  };
+}
+
+export async function upsertWellnessInputs(userId: string, petId: string, inputs: any) {
+  const supabase = getSupabaseClient();
+  const payload = {
+    owner_id: userId,
+    pet_id: petId,
+    preventive: inputs.preventive || null,
+    medical: inputs.medical || null,
+    score: typeof inputs.score === "number" ? inputs.score : null,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase
+    .from("wellness_inputs")
+    .upsert(payload, { onConflict: "owner_id,pet_id" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+
+5) Weight History Persistence (HealthScreen + Supabase)
+--------------------------------------------------------
+Weight entries are loaded from Supabase + local storage, merged, and
+synced back. Manual status updates also add entries (including from PDF).
+
+Code:
+
+// src/screens/HealthScreen.tsx
+const loadWeightHistory = useCallback(async () => {
+  if (!activePetId) {
+    setWeightHistory([]);
+    return;
+  }
+  const key = user?.id ? `@kasper_weight_history_${user.id}_${activePetId}` : "";
+  let remoteEntries: WeightEntry[] = [];
+  if (user?.id) {
+    try {
+      remoteEntries = await fetchWeightHistory(user.id, activePetId);
+    } catch (error) {
+      console.error("HealthScreen: Failed to load weight history", error);
+    }
+  }
+
+  let localEntries: WeightEntry[] = [];
+  if (key) {
+    const raw = await storage.getItem(key);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        localEntries = Array.isArray(parsed) ? parsed : [];
+      } catch {
+        localEntries = [];
+      }
+    }
+  }
+
+  const merged = normalizeWeightEntries([...remoteEntries, ...localEntries]);
+  setWeightHistory(merged);
+
+  wellnessLoadRef.current.weight = true;
+  setWellnessHydrated(wellnessLoadRef.current.inputs && wellnessLoadRef.current.weight);
+
+  if (user?.id && merged.length > remoteEntries.length) {
+    upsertWeightHistory(user.id, activePetId, merged).catch((error) => {
+      console.warn("HealthScreen: Failed to sync weight history", error);
+    });
+  }
+}, [activePetId, user?.id]);
+
+// Manual entry also adds weight history (manual or auto-from-PDF)
+useEffect(() => {
+  if (!manualStatus?.weight) return;
+  const weightValue = typeof manualStatus.weight === "object" && "value" in manualStatus.weight
+    ? Number(manualStatus.weight.value)
+    : Number(manualStatus.weight);
+  if (!Number.isFinite(weightValue)) return;
+  addWeightEntry({
+    weight: weightValue,
+    date: manualStatus.updatedAt || new Date().toISOString(),
+    source: manualStatus.source === "auto" ? "pdf" : "manual",
+  });
+}, [manualStatus]);
+
+Supabase service calls:
+
+// src/services/supabaseData.ts
+export async function fetchWeightHistory(userId: string, petId: string) {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("pet_weight_history")
+    .select("weight, recorded_at, source")
+    .eq("owner_id", userId)
+    .eq("pet_id", petId)
+    .order("recorded_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((row: any) => ({
+    weight: Number(row.weight),
+    date: row.recorded_at,
+    source: row.source || undefined,
+  }));
+}
+
+export async function upsertWeightHistory(
+  userId: string,
+  petId: string,
+  entries: Array<{ weight: number; date: string; source?: string }>
+) {
+  if (!entries.length) return [];
+  const supabase = getSupabaseClient();
+  const deduped = new Map<string, { weight: number; date: string; source?: string }>();
+  entries.forEach((entry) => {
+    const weightValue = Number(entry.weight);
+    if (!Number.isFinite(weightValue)) return;
+    const parsedDate = new Date(entry.date);
+    if (Number.isNaN(parsedDate.getTime())) return;
+    const dateIso = parsedDate.toISOString();
+    const key = `${dateIso}|${weightValue}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, { weight: weightValue, date: dateIso, source: entry.source });
+    }
+  });
+  const payload = Array.from(deduped.values()).map((entry) => ({
+    owner_id: userId,
+    pet_id: petId,
+    weight: entry.weight,
+    recorded_at: entry.date,
+    source: entry.source || null,
+  }));
+  const { data, error } = await supabase
+    .from("pet_weight_history")
+    .upsert(payload, { onConflict: "owner_id,pet_id,recorded_at,weight" })
+    .select();
+  if (error) throw error;
+  return data;
+}
+
+
+6) Wellness Notifications (HealthScreen)
+-----------------------------------------
+These are not part of score math, but are driven by the score/weight data.
+
+Code:
+
+// src/screens/HealthScreen.tsx
+useEffect(() => {
+  if (!user?.id || !activePetId) return;
+  if (!wellnessHydrated) return;
+  let cancelled = false;
+  const run = async () => {
+    try {
+      const stored = await storage.getItem(SETTINGS_KEY);
+      const settings = stored ? JSON.parse(stored) : {};
+      const weightAlertEnabled = settings.weightAlert !== undefined ? settings.weightAlert : true;
+      const weightThreshold = settings.weightThreshold !== undefined ? settings.weightThreshold : 5;
+      const wellnessUpdatesEnabled = settings.wellnessUpdates !== undefined ? settings.wellnessUpdates : true;
+      const wellnessCadence =
+        settings.wellnessCadence === "monthly" || settings.wellnessCadence === "weekly"
+          ? settings.wellnessCadence
+          : "weekly";
+
+      const weightAlertKey = `@kasper_weight_alert_last_${user.id}_${activePetId}`;
+      const wellnessScoreKey = `@kasper_wellness_score_last_${user.id}_${activePetId}`;
+      const wellnessCadenceKey = `@kasper_wellness_cadence_last_${user.id}_${activePetId}`;
+
+      if (weightAlertEnabled && weightMetrics.hasHistory && weightHistory.length >= 3) {
+        const latestDate = weightMetrics.lastDate;
+        const latestWeight = weightMetrics.lastWeight;
+        const baselineWeight = weightMetrics.baselineWeight;
+        const daysSinceLatest = weightMetrics.lastRecordedDaysAgo;
+        const hasBaseline = weightMetrics.hasBaseline;
+
+        if (latestDate && latestWeight != null && baselineWeight != null && hasBaseline) {
+          if (daysSinceLatest <= WEIGHT_ALERT_RECENT_DAYS) {
+            const lastNotified = await storage.getItem(weightAlertKey);
+            if (!lastNotified || lastNotified !== latestDate) {
+              const pctLatest = Math.abs(((latestWeight - baselineWeight) / baselineWeight) * 100);
+              if (pctLatest >= weightThreshold) {
+                const now = new Date();
+                const recentWeights = weightHistory.filter((entry) => {
+                  return daysBetween(now, entry.date) <= WEIGHT_ALERT_RECENT_DAYS;
+                });
+                const latestDirection = Math.sign(latestWeight - baselineWeight);
+                const confirmed = recentWeights.some((entry) => {
+                  if (entry.date === latestDate) return false;
+                  const pct = Math.abs(((entry.weight - baselineWeight) / baselineWeight) * 100);
+                  const direction = Math.sign(entry.weight - baselineWeight);
+                  return pct >= weightThreshold && direction === latestDirection;
+                });
+
+                if (confirmed) {
+                  await insertNotification(user.id, {
+                    petId: activePetId,
+                    kind: "health",
+                    title: "Weight change detected",
+                    message: `Weight changed by ${pctLatest.toFixed(1)}% (threshold ±${weightThreshold}%).`,
+                  });
+                } else {
+                  await insertNotification(user.id, {
+                    petId: activePetId,
+                    kind: "health",
+                    title: "Re-weigh to confirm",
+                    message: "A weight change was detected. Please log another weight to confirm.",
+                  });
+                }
+                await storage.setItem(weightAlertKey, latestDate);
+              }
+            }
+          }
+        }
+      }
+
+      if (wellnessUpdatesEnabled) {
+        const now = Date.now();
+        const cadenceMs = wellnessCadence === "monthly"
+          ? 1000 * 60 * 60 * 24 * 30
+          : 1000 * 60 * 60 * 24 * 7;
+        const lastCadenceRaw = await storage.getItem(wellnessCadenceKey);
+        const lastCadenceTs = lastCadenceRaw ? new Date(lastCadenceRaw).getTime() : 0;
+        const cadenceDue = !Number.isFinite(lastCadenceTs) || now - lastCadenceTs >= cadenceMs;
+
+        if (cadenceDue) {
+          await insertNotification(user.id, {
+            petId: activePetId,
+            kind: "health",
+            title: wellnessCadence === "monthly" ? "Monthly wellness summary" : "Weekly wellness summary",
+            message: `Current wellness score: ${totalScore}/100.`,
+          });
+          await storage.setItem(wellnessCadenceKey, new Date(now).toISOString());
+        }
+
+        const lastScoreRaw = await storage.getItem(wellnessScoreKey);
+        if (!wellnessScoreSeededRef.current) {
+          const seedScore = wellnessInitialScoreRef.current ?? totalScore;
+          await storage.setItem(wellnessScoreKey, `${seedScore}`);
+          wellnessScoreSeededRef.current = true;
+        } else if (!lastScoreRaw) {
+          await storage.setItem(wellnessScoreKey, `${totalScore}`);
+        } else if (wellnessUserChangedRef.current) {
+          const lastScore = Number(lastScoreRaw);
+          if (!Number.isNaN(lastScore) && Math.abs(totalScore - lastScore) >= 1) {
+            await insertNotification(user.id, {
+              petId: activePetId,
+              kind: "health",
+              title: "Wellness score updated",
+              message: `Score changed from ${lastScore} to ${totalScore}.`,
+            });
+          }
+          await storage.setItem(wellnessScoreKey, `${totalScore}`);
+          wellnessUserChangedRef.current = false;
+        }
+      }
+    } catch (error) {
+      if (!cancelled) {
+        console.warn("HealthScreen: Failed to evaluate health alerts", error);
+      }
+    }
+  };
+  run();
+  return () => {
+    cancelled = true;
+  };
+}, [user?.id, activePetId, weightHistory, weightMetrics, totalScore]);

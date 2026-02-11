@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { View, Text, SectionList, TouchableOpacity, Image } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
@@ -8,7 +8,7 @@ import { useNavigation } from "@src/contexts/NavigationContext";
 import { useAuth } from "@src/contexts/AuthContext";
 import ScreenHeader from "@src/components/ScreenHeader";
 import { Button } from "@src/components/UI";
-import { fetchNotifications, updateNotificationRead } from "@src/services/supabaseData";
+import { fetchNotifications, markAllNotificationsRead, updateNotificationRead } from "@src/services/supabaseData";
 import storage from "@src/utils/storage";
 
 // Types
@@ -151,27 +151,34 @@ const NotificationCard = ({
         </View>
 
         <View style={{ flex: 1 }}>
-          <View style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between'
-          }}>
-            <Text style={{
-              ...TYPOGRAPHY.lg,
-              fontWeight: '800',
-              color: colors.text
-            }} numberOfLines={1}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: SPACING.sm }}>
+            <Text
+              style={{
+                ...TYPOGRAPHY.lg,
+                fontWeight: "800",
+                color: colors.text,
+                flex: 1,
+              }}
+              numberOfLines={2}
+            >
               {item.title}
             </Text>
-            <View style={{
-              backgroundColor: colors.bgSecondary,
-              paddingHorizontal: 8,
-              paddingVertical: 4,
-              borderRadius: 999,
-              borderWidth: 1,
-              borderColor: colors.borderLight,
-            }}>
-              <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>
+            <View
+              style={{
+                paddingHorizontal: 8,
+                paddingVertical: 4,
+                borderRadius: 10,
+                borderWidth: 1,
+                borderColor: colors.borderLight,
+                backgroundColor: colors.surface,
+                alignSelf: "flex-start",
+                maxWidth: 120,
+              }}
+            >
+              <Text
+                style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, textAlign: "right" }}
+                numberOfLines={1}
+              >
                 {dateLabel} · {timeLabel}
               </Text>
             </View>
@@ -190,7 +197,8 @@ const NotificationCard = ({
           <View style={{
             flexDirection: 'row',
             alignItems: 'center',
-            marginTop: 10
+            marginTop: 10,
+            gap: 8,
           }}>
             <CategoryPill kind={item.kind} />
             {!item.read && (
@@ -260,6 +268,8 @@ export default function AlertsScreen() {
   const petNamePossessive = petName === "your pet" ? "your pet's" : petName.endsWith("s") ? `${petName}'` : `${petName}'s`;
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [filter, setFilter] = useState<"all" | "unread">("all");
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
   const lastScrollYRef = useRef(0);
 
   const visibleItems = useMemo(() => {
@@ -348,25 +358,46 @@ export default function AlertsScreen() {
     return () => setNavHidden(false);
   }, [setNavHidden]);
 
+  const loadNotifications = useCallback(async () => {
+    if (!user?.id) {
+      setItems([]);
+      return;
+    }
+    setIsLoading(true);
+    setErrorMessage("");
+    try {
+      const data = await fetchNotifications(user.id, activePet?.id);
+      setItems(data);
+    } catch (error) {
+      console.error("Failed to load notifications:", error);
+      setErrorMessage("Couldn't load notifications. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [user?.id, activePet?.id]);
+
+  const handleMarkAllRead = useCallback(async () => {
+    if (!user?.id) return;
+    setItems(prev => prev.map(n => ({ ...n, read: true })));
+    try {
+      await markAllNotificationsRead(user.id, activePet?.id);
+    } catch (error) {
+      console.error("Failed to mark all as read:", error);
+      await loadNotifications();
+    }
+  }, [user?.id, activePet?.id, loadNotifications]);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
-      if (!user?.id) {
-        setItems([]);
-        return;
-      }
-      try {
-        const data = await fetchNotifications(user.id, activePet?.id);
-        if (!cancelled) setItems(data);
-      } catch (error) {
-        console.error("Failed to load notifications:", error);
-      }
+      if (cancelled) return;
+      await loadNotifications();
     };
     load();
     return () => {
       cancelled = true;
     };
-  }, [user?.id, activePet?.id]);
+  }, [loadNotifications]);
 
   const unreadCount = useMemo(() => items.filter(item => !item.read).length, [items]);
 
@@ -385,6 +416,25 @@ export default function AlertsScreen() {
         scrollEventThrottle={16}
         ListHeaderComponent={
           <View style={{ paddingTop: SPACING.sm, paddingBottom: SPACING.md }}>
+            {errorMessage ? (
+              <View style={{
+                backgroundColor: colors.dangerLight,
+                borderRadius: 12,
+                borderWidth: 1,
+                borderColor: colors.danger,
+                padding: SPACING.sm,
+                marginBottom: SPACING.md
+              }}>
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.danger, fontWeight: "600" }}>
+                  {errorMessage}
+                </Text>
+                <TouchableOpacity onPress={loadNotifications} style={{ marginTop: SPACING.xs }}>
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.danger, fontWeight: "600" }}>
+                    Retry
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
             <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>
               Keeping up with {petNamePossessive} world
             </Text>
@@ -393,6 +443,7 @@ export default function AlertsScreen() {
               alignItems: "center",
               justifyContent: "space-between",
               marginTop: SPACING.sm,
+              gap: SPACING.sm,
             }}>
               <View style={{
                 backgroundColor: colors.bgSecondary,
@@ -406,35 +457,54 @@ export default function AlertsScreen() {
                   {unreadCount} unread
                 </Text>
               </View>
-              <View style={{
-                flexDirection: "row",
-                backgroundColor: colors.bgSecondary,
-                borderRadius: 999,
-                padding: 4,
-                borderWidth: 1,
-                borderColor: colors.borderLight,
-              }}>
-                {(["all", "unread"] as const).map(key => {
-                  const active = filter === key;
-                  return (
-                    <TouchableOpacity
-                      key={key}
-                      onPress={() => setFilter(key)}
-                      style={{
-                        paddingVertical: 6,
-                        paddingHorizontal: 12,
-                        borderRadius: 999,
-                        backgroundColor: active ? colors.card : "transparent",
-                        borderWidth: active ? 1 : 0,
-                        borderColor: active ? colors.borderLight : "transparent",
-                      }}
-                    >
-                      <Text style={{ ...TYPOGRAPHY.sm, color: active ? colors.accent : colors.textMuted, fontWeight: "600" }}>
-                        {key === "all" ? "All" : "Unread"}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
+                {unreadCount > 0 && (
+                  <TouchableOpacity
+                    onPress={handleMarkAllRead}
+                    style={{
+                      paddingVertical: 6,
+                      paddingHorizontal: 10,
+                      borderRadius: 999,
+                      borderWidth: 1,
+                      borderColor: colors.borderLight,
+                      backgroundColor: colors.surface,
+                    }}
+                  >
+                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.accent, fontWeight: "700" }}>
+                      Mark all read
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <View style={{
+                  flexDirection: "row",
+                  backgroundColor: colors.bgSecondary,
+                  borderRadius: 999,
+                  padding: 4,
+                  borderWidth: 1,
+                  borderColor: colors.borderLight,
+                }}>
+                  {(["all", "unread"] as const).map(key => {
+                    const active = filter === key;
+                    return (
+                      <TouchableOpacity
+                        key={key}
+                        onPress={() => setFilter(key)}
+                        style={{
+                          paddingVertical: 6,
+                          paddingHorizontal: 12,
+                          borderRadius: 999,
+                          backgroundColor: active ? colors.card : "transparent",
+                          borderWidth: active ? 1 : 0,
+                          borderColor: active ? colors.borderLight : "transparent",
+                        }}
+                      >
+                        <Text style={{ ...TYPOGRAPHY.sm, color: active ? colors.accent : colors.textMuted, fontWeight: "600" }}>
+                          {key === "all" ? "All" : "Unread"}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
             </View>
           </View>
@@ -470,13 +540,17 @@ export default function AlertsScreen() {
                 marginBottom: SPACING.md,
               }}
             >
-              <Ionicons name="notifications-off-outline" size={28} color={colors.accent} />
+              <Ionicons
+                name={isLoading ? "hourglass-outline" : "notifications-off-outline"}
+                size={28}
+                color={colors.accent}
+              />
             </View>
             <Text style={{
               ...TYPOGRAPHY.base,
               color: colors.text
             }}>
-              You're all caught up
+              {isLoading ? "Loading notifications..." : "You're all caught up"}
             </Text>
             <Text style={{
               ...TYPOGRAPHY.sm,
@@ -485,13 +559,23 @@ export default function AlertsScreen() {
               marginBottom: SPACING.lg,
               textAlign: "center",
             }}>
-              Turn on alerts to stay updated on health and reminders.
+              {errorMessage
+                ? "We couldn't load your notifications."
+                : "Turn on alerts to stay updated on health and reminders."}
             </Text>
-            <Button
-              title="Manage notifications"
-              onPress={() => navigateTo("NotificationsSettings")}
-              size="sm"
-            />
+            {errorMessage ? (
+              <Button
+                title="Retry"
+                onPress={loadNotifications}
+                size="sm"
+              />
+            ) : (
+              <Button
+                title="Manage notifications"
+                onPress={() => navigateTo("NotificationsSettings")}
+                size="sm"
+              />
+            )}
           </View>
         }
       />

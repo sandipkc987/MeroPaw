@@ -174,6 +174,18 @@ create table if not exists wellness_inputs (
   unique (owner_id, pet_id)
 );
 
+-- Weight history (used for wellness scoring)
+create table if not exists pet_weight_history (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid not null,
+  pet_id uuid references pets(id) on delete cascade,
+  weight numeric not null,
+  recorded_at timestamptz not null,
+  source text,
+  created_at timestamptz default now(),
+  unique (owner_id, pet_id, recorded_at, weight)
+);
+
 -- User profile (owner info)
 create table if not exists user_profiles (
   id uuid primary key default gen_random_uuid(),
@@ -181,6 +193,12 @@ create table if not exists user_profiles (
   owner_name text,
   owner_phone text,
   owner_email text,
+  owner_legal_first_name text,
+  owner_legal_last_name text,
+  owner_preferred_first_name text,
+  owner_residential_address text,
+  owner_mailing_address text,
+  owner_emergency_contact text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
@@ -203,6 +221,7 @@ alter table auth_devices enable row level security;
 alter table health_records enable row level security;
 alter table vet_appointments enable row level security;
 alter table wellness_inputs enable row level security;
+alter table pet_weight_history enable row level security;
 alter table user_profiles enable row level security;
 alter table documents enable row level security;
 alter table expense_extractions enable row level security;
@@ -240,6 +259,11 @@ with check (auth.uid()::text = owner_id::text);
 
 create policy "Users manage their wellness inputs"
 on wellness_inputs for all
+using (auth.uid()::text = owner_id::text)
+with check (auth.uid()::text = owner_id::text);
+
+create policy "Users manage their weight history"
+on pet_weight_history for all
 using (auth.uid()::text = owner_id::text)
 with check (auth.uid()::text = owner_id::text);
 

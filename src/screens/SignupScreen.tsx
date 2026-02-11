@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, TouchableOpacity, ScrollView, Image } from "react-native";
+import { View, Text, TouchableOpacity, ScrollView, Image, Linking } from "react-native";
 import { SPACING, TYPOGRAPHY } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { Button, Input } from "@src/components/UI";
@@ -316,9 +316,26 @@ export default function SignupScreen({ onRequestCode, onVerifyCode, onLogin, onB
           />
         )}
 
-        <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, textAlign: "center", marginBottom: SPACING.xl }}>
-          By continuing, you agree to our Terms and Privacy Policy
-        </Text>
+        <View style={{ alignItems: "center", marginBottom: SPACING.xl }}>
+          <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, textAlign: "center" }}>
+            By continuing, you agree to our
+          </Text>
+          <View style={{ flexDirection: "row", marginTop: 4 }}>
+            <TouchableOpacity onPress={() => Linking.openURL("https://meropaw.com/terms")}>
+              <Text style={{ ...TYPOGRAPHY.xs, color: colors.accent, fontWeight: "600" }}>
+                Terms
+              </Text>
+            </TouchableOpacity>
+            <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginHorizontal: 6 }}>
+              &amp;
+            </Text>
+            <TouchableOpacity onPress={() => Linking.openURL("https://meropaw.com/privacy")}>
+              <Text style={{ ...TYPOGRAPHY.xs, color: colors.accent, fontWeight: "600" }}>
+                Privacy Policy
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
 
         {/* Login Link */}
         <View
