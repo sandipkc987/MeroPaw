@@ -1,10 +1,15 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo } from 'react';
-import { Alert } from "react-native";
+import { Alert, AppState, AppStateStatus, Platform } from "react-native";
 import storage from "@src/utils/storage";
 import { useAuth } from './AuthContext';
 import { usePets } from "@src/contexts/PetContext";
 import { getSupabaseClient } from "@src/services/supabaseClient";
-import { getMemoryPublicUrl, uploadToBucket, insertNotification } from "@src/services/supabaseData";
+import {
+  getMemoryPublicUrl,
+  uploadToBucket,
+  insertNotification,
+  resolveMemoryImageUrl,
+} from "@src/services/supabaseData";
 
 export type MemoryType = "photo" | "video";
 
@@ -46,6 +51,7 @@ interface MemoriesContextType {
   getRecentMemories: (limit?: number) => MemoryItem[];
   getFavoriteMemories: (limit?: number) => MemoryItem[];
   getIntelligentHighlights: () => HighlightCard[];
+  refreshMemories: () => Promise<void>;
 }
 
 const MemoriesContext = createContext<MemoriesContextType | undefined>(undefined);
@@ -66,9 +72,9 @@ export function MemoriesProvider({ children }: { children: React.ReactNode }) {
   const seededUsersRef = useRef<Set<string>>(new Set());
   const hasHydratedRef = useRef(false);
 
-  useEffect(() => {
-    const loadMemories = async () => {
-      try {
+  const loadMemoriesFromSupabase = useCallback(async (isRefresh = false) => {
+    try {
+      if (!isRefresh) {
         const [highlights, seen] = await Promise.all([
           storage.getItem(getHighlightsStorageKey()),
           storage.getItem(SEEN_FLASHBACKS_KEY),
@@ -91,33 +97,41 @@ export function MemoriesProvider({ children }: { children: React.ReactNode }) {
             setSeenFlashbacks({});
           }
         }
+      }
 
-        if (!user?.id) {
-          setMemories(defaultMemories);
-          return;
-        }
-        if (!activePetId) {
-          setMemories(defaultMemories);
-          setIsInitialized(true);
-          return;
-        }
+      if (!user?.id) {
+        setMemories(defaultMemories);
+        return;
+      }
+      if (!activePetId) {
+        setMemories(defaultMemories);
+        setIsInitialized(true);
+        return;
+      }
 
-        const supabase = getSupabaseClient();
-        const { data, error } = await supabase
-          .from("memories")
-          .select("*")
-          .eq("owner_id", user.id)
-          .eq("pet_id", activePetId)
-          .order("uploaded_at", { ascending: false });
-        if (error) throw error;
+      const supabase = getSupabaseClient();
+      const { data, error } = await supabase
+        .from("memories")
+        .select("*")
+        .eq("owner_id", user.id)
+        .eq("pet_id", activePetId)
+        .order("uploaded_at", { ascending: false });
+      if (error) throw error;
 
-        const mapped = (data || []).map((row: any) => {
+      const mapped = await Promise.all(
+        (data || []).map(async (row: any) => {
           const uploadedAt = row.uploaded_at ? new Date(row.uploaded_at).getTime() : Date.now();
+          let src = "";
+          if (Platform.OS === "web") {
+            src = (await resolveMemoryImageUrl(row.storage_path)) || "";
+          } else {
+            src = getMemoryPublicUrl(row.storage_path) || row.storage_path || "";
+          }
           return {
             id: row.id,
             type: row.media_type || row.type,
-            month: new Date(uploadedAt).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-            src: getMemoryPublicUrl(row.storage_path) || row.storage_path,
+            month: new Date(uploadedAt).toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+            src,
             w: row.width || 1000,
             h: row.height || 1000,
             title: row.title || undefined,
@@ -127,22 +141,40 @@ export function MemoriesProvider({ children }: { children: React.ReactNode }) {
             isArchived: !!row.is_archived,
             uploadedAt,
           } as MemoryItem;
-        });
+        })
+      );
 
-        setMemories(prev => {
-          const pending = prev.filter(m => m.id.startsWith("temp_"));
-          return pending.length ? [...pending, ...mapped] : mapped;
-        });
-        hasHydratedRef.current = true;
-      } catch (error) {
-        console.error('MemoriesProvider: Failed to load memories from Supabase', error);
+      setMemories(prev => {
+        const pending = prev.filter(m => m.id.startsWith("temp_"));
+        return pending.length ? [...pending, ...mapped] : mapped;
+      });
+      hasHydratedRef.current = true;
+    } catch (error) {
+      console.error('MemoriesProvider: Failed to load memories from Supabase', error);
+      if (!isRefresh) {
         setMemories(defaultMemories);
-      } finally {
-        setIsInitialized(true);
+      }
+    } finally {
+      setIsInitialized(true);
+    }
+  }, [activePetId, user?.id]);
+
+  useEffect(() => {
+    loadMemoriesFromSupabase(false);
+  }, [loadMemoriesFromSupabase]);
+
+  // Refresh memories when app comes back to foreground
+  useEffect(() => {
+    const handleAppStateChange = (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active' && isInitialized && user?.id && activePetId) {
+        console.log('MemoriesProvider: App came to foreground, refreshing memories');
+        loadMemoriesFromSupabase(true);
       }
     };
-    loadMemories();
-  }, [activePetId, user?.id]);
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => subscription.remove();
+  }, [isInitialized, user?.id, activePetId, loadMemoriesFromSupabase]);
 
   const addMemory = useCallback(async (
     memory: Omit<MemoryItem, 'id' | 'isFavorite' | 'isArchived' | 'uploadedAt' | 'month'>,
@@ -611,6 +643,10 @@ export function MemoriesProvider({ children }: { children: React.ReactNode }) {
 
   const getIntelligentHighlights = useCallback(() => intelligentHighlights, [intelligentHighlights]);
 
+  const refreshMemories = useCallback(async () => {
+    await loadMemoriesFromSupabase(true);
+  }, [loadMemoriesFromSupabase]);
+
   const value = {
     memories,
     onboardingHighlights,
@@ -622,6 +658,7 @@ export function MemoriesProvider({ children }: { children: React.ReactNode }) {
     getRecentMemories,
     getFavoriteMemories,
     getIntelligentHighlights,
+    refreshMemories,
   };
 
   return (

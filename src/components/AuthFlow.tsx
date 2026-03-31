@@ -11,6 +11,7 @@ type AuthStep = 'welcome' | 'login' | 'signup' | 'forgot' | 'onboarding';
 export default function AuthFlow() {
   const {
     login,
+    signInWithGoogle,
     requestEmailOtp,
     verifyEmailOtp,
     resetPassword,
@@ -53,7 +54,13 @@ export default function AuthFlow() {
     console.log('AuthFlow: Starting login...');
     await login(email, password);
     console.log('AuthFlow: Login completed, user is now authenticated');
-    // Set step to onboarding - useEffect will also handle this if component remounts
+    setCurrentStep('onboarding');
+  };
+
+  const handleGoogleSignIn = async () => {
+    console.log('AuthFlow: Starting Google sign-in...');
+    await signInWithGoogle();
+    console.log('AuthFlow: Google sign-in completed');
     setCurrentStep('onboarding');
   };
 
@@ -107,6 +114,7 @@ export default function AuthFlow() {
         return (
           <LoginScreen
             onLogin={handleLogin}
+            onGoogleSignIn={handleGoogleSignIn}
             onSignup={handleGoToSignup}
             onForgotPassword={handleGoToForgotPassword}
             onBack={handleBack}
@@ -118,6 +126,7 @@ export default function AuthFlow() {
           <SignupScreen
             onRequestCode={handleRequestCode}
             onVerifyCode={handleVerifyCode}
+            onGoogleSignIn={handleGoogleSignIn}
             onLogin={handleGoToLogin}
             onBack={handleBack}
           />
@@ -170,6 +179,7 @@ export default function AuthFlow() {
             <SignupScreen
               onRequestCode={handleRequestCode}
               onVerifyCode={handleVerifyCode}
+              onGoogleSignIn={handleGoogleSignIn}
               onLogin={handleGoToLogin}
               onBack={handleBack}
             />
@@ -178,7 +188,9 @@ export default function AuthFlow() {
           return (
             <LoginScreen
               onLogin={handleLogin}
+              onGoogleSignIn={handleGoogleSignIn}
               onSignup={handleGoToSignup}
+              onForgotPassword={handleGoToForgotPassword}
               onBack={handleBack}
             />
           );

@@ -4,6 +4,7 @@ import { Button, Card, Row, Divider, SectionTitle, Toggle } from "@src/component
 import { SPACING, TYPOGRAPHY } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import ScreenHeader from "@src/components/ScreenHeader";
+import { useNavigation } from "@src/contexts/NavigationContext";
 import { useAuth } from "@src/contexts/AuthContext";
 import {
   getNotificationPreferences,
@@ -17,6 +18,7 @@ function effectiveNotif(master: boolean, flag: boolean) {
 
 export default function NotificationsSettingsScreen() {
   const { colors } = useTheme();
+  const { goBack, canGoBack, setActiveScreen, setActiveTab } = useNavigation();
   const { user, isAdmin } = useAuth();
   const [notifAll, setNotifAll] = useState(true);
   const [notifReminders, setNotifReminders] = useState(true);
@@ -77,9 +79,50 @@ export default function NotificationsSettingsScreen() {
     }
   };
 
+  const handleSendTestPushDelayed = async () => {
+    if (!user?.id) {
+      Alert.alert("Sign in required", "Please sign in before sending a test push.");
+      return;
+    }
+    Alert.alert(
+      "iOS: Background the app first",
+      "Tap OK, then immediately swipe up to go to the home screen. The push will be sent in 5 seconds.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "OK",
+          onPress: async () => {
+            setIsSendingTest(true);
+            await new Promise((r) => setTimeout(r, 5000));
+            try {
+              await sendTestPush(user!.id);
+              Alert.alert("Test sent", "Check your device for the push notification.");
+            } catch (error) {
+              const message = error instanceof Error ? error.message : "Unable to send test push.";
+              Alert.alert("Failed to send", message);
+            } finally {
+              setIsSendingTest(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="" variant="stacked" />
+      <ScreenHeader
+        title=""
+        variant="stacked"
+        onBackPress={() => {
+          if (canGoBack) {
+            goBack();
+          } else {
+            setActiveScreen(null);
+            setActiveTab("profile");
+          }
+        }}
+      />
       <ScrollView 
         contentContainerStyle={{ padding: SPACING.lg, paddingBottom: 100 }}
         showsVerticalScrollIndicator={false}
@@ -115,7 +158,7 @@ export default function NotificationsSettingsScreen() {
           <Row 
             icon="medkit-outline"
             label="Health Alerts" 
-            hint="Abnormal weight, wellness score changes" 
+            hint="Abnormal weight changes" 
             control={
               <Toggle
                 value={effectiveNotif(notifAll, notifHealth)}
@@ -152,6 +195,20 @@ export default function NotificationsSettingsScreen() {
                   <Button
                     title={isSendingTest ? "Sending..." : "Send"}
                     onPress={handleSendTestPush}
+                    disabled={isSendingTest}
+                    size="sm"
+                  />
+                }
+              />
+              <Divider />
+              <Row
+                icon="time-outline"
+                label="Send in 5 sec (iOS)"
+                hint="Background app first, then tap – for iOS testing"
+                control={
+                  <Button
+                    title={isSendingTest ? "..." : "Send"}
+                    onPress={handleSendTestPushDelayed}
                     disabled={isSendingTest}
                     size="sm"
                   />

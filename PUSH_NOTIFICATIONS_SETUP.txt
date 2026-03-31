@@ -4,15 +4,18 @@ Meropaw Push Notifications Setup (Firebase + Supabase + App)
    - Create Firebase project.
    - Register Android app using package name: com.meropaw.app
    - Download google-services.json.
-   - (iOS later) Register iOS app, download GoogleService-Info.plist.
+   - Register iOS app using bundle ID: com.meropaw.app
+   - Download GoogleService-Info.plist.
 
 2) Project files
    - Place google-services.json in: firebase/google-services.json
+   - Place GoogleService-Info.plist in: firebase/GoogleService-Info.plist
    - app.json:
        expo.android.googleServicesFile = "./firebase/google-services.json"
-       expo.plugins = ["@react-native-firebase/app"]
-   - (iOS later) Add:
        expo.ios.googleServicesFile = "./firebase/GoogleService-Info.plist"
+       expo.plugins = ["@react-native-firebase/app"]
+       expo.ios.entitlements = { "aps-environment": "production" }
+       expo.ios.infoPlist.UIBackgroundModes = ["remote-notification"]
 
 3) Dependencies
    - npm install @react-native-firebase/app @react-native-firebase/messaging
@@ -34,7 +37,7 @@ Meropaw Push Notifications Setup (Firebase + Supabase + App)
    - Ensure function can read FIREBASE_SERVICE_ACCOUNT_JSON secret.
 
 8) App: token registration + storage
-   - File: src/services/pushNotifications.ts
+   - Files: src/services/pushNotifications.native.ts (iOS/Android), pushNotifications.web.ts (web stub)
      - registerDeviceForRemoteMessages()
      - requestPermission()
      - getToken()
@@ -78,4 +81,83 @@ Meropaw Push Notifications Setup (Firebase + Supabase + App)
 Notes
    - Foreground push banners typically do not show on Android; use in-app toast if needed.
    - iOS push requires Apple Developer Program + APNs setup.
+
+
+=== iOS PUSH NOTIFICATIONS SETUP (follow after Android) ===
+
+Prerequisites
+   - Apple Developer Program membership (required for APNs).
+   - macOS recommended for building; EAS Build can build in cloud.
+
+--- Step A: Apple Developer – Create APNs Key ---
+1) Go to https://developer.apple.com/account
+2) Certificates, IDs & Profiles → Keys
+3) Click "+" to create a new key
+4) Name it (e.g. "Meropaw APNs Key")
+5) Enable "Apple Push Notifications service (APNs)" → Continue → Register
+6) Download the .p8 file (only downloadable once – save it securely)
+7) Note the Key ID shown on screen
+
+--- Step B: Apple Developer – App Identifier (Push capability) ---
+1) Certificates, IDs & Profiles → Identifiers
+2) Find com.meropaw.app (or create if missing)
+3) Ensure "Push Notifications" capability is enabled
+4) Save if you made changes
+
+--- Step C: Firebase – Upload APNs Key ---
+1) Go to Firebase Console → Project Settings (gear icon)
+2) Cloud Messaging tab
+3) Under "Apple app configuration", select your iOS app (com.meropaw.app)
+4) Under "APNs authentication key", click Upload
+5) Upload your .p8 file
+6) Enter Key ID (from Step A)
+7) Enter Team ID (from Apple Developer → Membership details)
+8) Enter your Apple auth key ID if asked
+9) Click Upload, then Publish
+
+--- Step D: Project config (app.json) ---
+   Already configured if you followed section 2:
+   - expo.ios.googleServicesFile = "./firebase/GoogleService-Info.plist"
+   - expo.ios.entitlements = { "aps-environment": "production" }
+   - expo.ios.infoPlist.UIBackgroundModes = ["remote-notification"]
+
+   For development builds, you may need "aps-environment": "development".
+   EAS Build syncs entitlements with Apple when you run eas build.
+
+--- Step E: EAS credentials (first iOS build) ---
+1) Run: eas credentials
+2) Select iOS → production (or development)
+3) Choose "Push Notifications: Manage your Apple Push Notifications Key"
+4) EAS can create/manage the key, or you can use the one from Step A
+5) If using your own key: ensure it's uploaded to Firebase (Step C)
+
+--- Step F: Build iOS app ---
+   - Development: eas build -p ios --profile development
+   - Production:  eas build -p ios --profile production
+   - Install via TestFlight or direct install link
+
+--- Step G: Verify iOS push ---
+   - Same as Android: push_tokens stores FCM tokens for platform "ios"
+   - send-fcm works for both platforms; no changes needed
+   - Test: background the app, use "Send test push" from Notifications settings
+   - Push appears in Notification Center when app is backgrounded
+
+--- iOS-specific notes ---
+   - Use a physical device; iOS Simulator has limited push support (macOS 13+ Apple Silicon only)
+   - Ensure GoogleService-Info.plist exists in firebase/ folder
+   - aps-environment: "development" for dev builds, "production" for TestFlight/App Store
+   - UNREGISTERED tokens: same handling as Android (send-fcm deletes them)
+
+--- iOS: Notification not showing? ---
+   - **App in foreground**: iOS does NOT show push banners when the app is open. You must
+     BACKGROUND the app (swipe up / home) before or right after sending. Use admin
+     "Send in 5 sec (iOS)" to get time to background first.
+   - **APNs key in Firebase**: Ensure the .p8 key is uploaded under BOTH Production and
+     Development (if using dev builds) in Firebase Cloud Messaging settings.
+   - **Check push_tokens**: Run: select * from push_tokens where owner_id = 'YOUR_USER_ID';
+     Verify there is a row with platform = 'ios' and a non-null expo_push_token.
+   - **Device settings**: Settings > Meropaw > Notifications must be ON; Allow Notifications,
+     Lock Screen, Notification Center, Banners enabled.
+   - **Focus / Do Not Disturb**: Temporarily disable Focus or DND to rule them out.
+   - **Redeploy send-fcm**: After adding iOS APNs config, run: supabase functions deploy send-fcm
 

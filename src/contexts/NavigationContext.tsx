@@ -1,4 +1,7 @@
-import React, { createContext, useContext, useState, useRef, useCallback } from 'react';
+import React, { createContext, useContext, useState, useRef, useCallback, useEffect } from 'react';
+import { useAuth } from '@src/contexts/AuthContext';
+import { usePets } from '@src/contexts/PetContext';
+import { fetchUnreadNotificationCount } from '@src/services/supabaseData';
 
 interface NavigationContextType {
   activeTab: string;
@@ -16,21 +19,59 @@ interface NavigationContextType {
   triggerAddExpense: () => void;
   registerAddHealthRecordCallback: (callback: () => void) => void;
   triggerAddHealthRecord: () => void;
+  unreadNotificationCount: number;
+  setUnreadNotificationCount: (count: number) => void;
+  refreshUnreadNotificationCount: () => Promise<void>;
+  refreshVetVisitTrigger: number;
+  incrementVetVisitRefreshTrigger: () => void;
 }
 
 const NavigationContext = createContext<NavigationContextType | undefined>(undefined);
 
 export function NavigationProvider({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth();
+  const { getActivePet } = usePets();
+  const activePet = getActivePet();
+  
   const [activeTab, setActiveTab] = useState("home");
   const [activeScreen, setActiveScreen] = useState<string | null>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [navHidden, setNavHidden] = useState(false);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [refreshVetVisitTrigger, setRefreshVetVisitTrigger] = useState(0);
   const addReminderCallbackRef = useRef<(() => void) | null>(null);
   const pendingAddReminderRef = useRef(false);
   const addExpenseCallbackRef = useRef<(() => void) | null>(null);
   const pendingAddExpenseRef = useRef(false);
   const addHealthRecordCallbackRef = useRef<(() => void) | null>(null);
   const pendingAddHealthRecordRef = useRef(false);
+
+  const refreshUnreadNotificationCount = useCallback(async () => {
+    if (!user?.id) {
+      setUnreadNotificationCount(0);
+      return;
+    }
+    try {
+      const count = await fetchUnreadNotificationCount(user.id, activePet?.id);
+      setUnreadNotificationCount(count);
+    } catch {
+      setUnreadNotificationCount(0);
+    }
+  }, [user?.id, activePet?.id]);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      if (!mounted) return;
+      await refreshUnreadNotificationCount();
+    };
+    load();
+    const interval = setInterval(load, 30000);
+    return () => {
+      mounted = false;
+      clearInterval(interval);
+    };
+  }, [refreshUnreadNotificationCount]);
 
   const setActiveScreenSafe = useCallback((screen: string | null) => {
     setNavHidden(false);
@@ -114,6 +155,10 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
     pendingAddHealthRecordRef.current = true;
   }, []);
 
+  const incrementVetVisitRefreshTrigger = useCallback(() => {
+    setRefreshVetVisitTrigger((prev) => prev + 1);
+  }, []);
+
   return (
     <NavigationContext.Provider value={{ 
       activeTab,
@@ -130,7 +175,12 @@ export function NavigationProvider({ children }: { children: React.ReactNode }) 
       registerAddExpenseCallback,
       triggerAddExpense,
       registerAddHealthRecordCallback,
-      triggerAddHealthRecord
+      triggerAddHealthRecord,
+      unreadNotificationCount,
+      setUnreadNotificationCount,
+      refreshUnreadNotificationCount,
+      refreshVetVisitTrigger,
+      incrementVetVisitRefreshTrigger
     }}>
       {children}
     </NavigationContext.Provider>

@@ -1,25 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, Modal, Alert, Platform, ActivityIndicator, RefreshControl } from "react-native";
+import { View, Text, ScrollView, TouchableOpacity, Modal, Alert, Platform, ActivityIndicator, RefreshControl, Linking } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { timeAgo } from "@src/utils/helpers";
 import { useNavigation } from "@src/contexts/NavigationContext";
 import { usePets } from "@src/contexts/PetContext";
 import { useAuth } from "@src/contexts/AuthContext";
-import { Button, Card, Chip, Input, Toggle } from "@src/components/UI";
-import Select from "@src/components/Select";
+import { Button, Card, Chip, Input } from "@src/components/UI";
 import ActionSheet, { ActionSheetOption } from "@src/components/ActionSheet";
 import EmptyState from "@src/components/EmptyState";
 import { Ionicons } from "@expo/vector-icons";
 import ScreenHeader from "@src/components/ScreenHeader";
 import ReceiptViewer from "@src/components/ReceiptViewer";
 import * as DocumentPicker from "expo-document-picker";
-import Svg, { Circle } from "react-native-svg";
-import { fetchHealthRecords, insertHealthRecord, updateHealthRecord, deleteHealthRecord, uploadHealthAttachment, insertNotification, fetchVetAppointments, insertVetAppointment, updateVetAppointment, deleteVetAppointment, fetchWellnessInputs, upsertWellnessInputs, getHealthAttachmentViewUrl, fetchWeightHistory, upsertWeightHistory } from "@src/services/supabaseData";
-import analyzeClinicalSummary from "@src/services/clinicalSummaryAnalysis";
+import { fetchHealthRecords, insertHealthRecord, updateHealthRecord, deleteHealthRecord, uploadHealthAttachment, insertNotification, fetchVetAppointments, insertVetAppointment, updateVetAppointment, deleteVetAppointment, getHealthAttachmentViewUrl, fetchWeightHistory, upsertWeightHistory } from "@src/services/supabaseData";
+import { checkWeightChangeAndNotify } from "@src/services/weightChangeAlert";
+import { getSupabaseClient } from "@src/services/supabaseClient";
+import { supabaseUrl } from "@src/services/supabaseClient";
+import analyzeClinicalSummary, { generateHealthSummary } from "@src/services/clinicalSummaryAnalysis";
 import storage from "@src/utils/storage";
-
-const SETTINGS_KEY = "@kasper_settings";
 
 interface PDFAttachment {
   id: string;
@@ -33,7 +33,11 @@ interface PDFAttachment {
     respiratoryRate?: { value: number; unit?: string; confidence: number };
     attitude?: { value: string; confidence: number };
     visitDate?: { value: string; confidence: number };
+    visitTitle?: { value: string; confidence: number };
     visitType?: { value: string; confidence: number };
+    doctorName?: { value: string; confidence: number };
+    clinicName?: { value: string; confidence: number };
+    vaccinations?: Array<{ name: string; date?: string; dueDate?: string }>;
   };
 }
 
@@ -61,7 +65,8 @@ interface VetAppointment {
   zip?: string;
   reason?: string;
   notes?: string;
-  status?: "scheduled" | "completed" | "canceled";
+  status?: "scheduled" | "confirmed" | "completed" | "canceled";
+  calendarEventId?: string;
 }
 
 
@@ -107,7 +112,20 @@ const HealthCard = ({
   };
 
   return (
-    <Card elevated style={{ marginBottom: SPACING.md, borderWidth: highlighted ? 1 : 0, borderColor: highlighted ? colors.accent : "transparent" }}>
+    <View style={{
+      marginBottom: SPACING.md,
+      backgroundColor: colors.card,
+      borderRadius: RADIUS.lg,
+      borderWidth: 1,
+      borderColor: highlighted ? colors.accent : colors.borderLight,
+      overflow: "hidden",
+      ...SHADOWS.sm,
+    }}>
+      <LinearGradient
+        colors={[colors.accent + "14", colors.accent + "06", "transparent"]}
+        style={{ height: 24 }}
+      />
+      <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg, paddingTop: SPACING.sm }}>
       <View style={{ flexDirection: "row", alignItems: "flex-start" }}>
         <View style={{
           width: 48,
@@ -135,21 +153,21 @@ const HealthCard = ({
               </TouchableOpacity>
             )}
           </View>
-          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.xs }}>
+          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.xs, flexWrap: "nowrap" }}>
             <Ionicons name="calendar-outline" size={14} color={colors.textMuted} />
-            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginLeft: 4 }}>
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginLeft: 4 }} numberOfLines={1}>
               {record.date
                 ? new Date(record.date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
                 : "Date not set"}
             </Text>
             {record.vet && (
-              <>
-                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginHorizontal: 8 }}>•</Text>
-                <Ionicons name="person-outline" size={14} color={colors.textMuted} />
-                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginLeft: 4 }}>
+              <View style={{ flex: 1, flexDirection: "row", alignItems: "center", minWidth: 0, marginLeft: 8 }}>
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginRight: 6 }}>•</Text>
+                <Ionicons name="person-outline" size={14} color={colors.textMuted} style={{ marginRight: 4 }} />
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, flex: 1 }} numberOfLines={1} ellipsizeMode="tail">
                   {record.vet}
                 </Text>
-              </>
+              </View>
             )}
           </View>
           {record.notes && (
@@ -201,239 +219,36 @@ const HealthCard = ({
           )}
         </View>
       </View>
-    </Card>
+      </View>
+    </View>
   );
 };
 
-// ---------- Wellness Score Helpers ----------
-const clamp = (n: number, min = 0, max = 100) => Math.max(min, Math.min(max, n));
-const MS_PER_DAY = 1000 * 60 * 60 * 24;
-const WEIGHT_BASELINE_WINDOW_DAYS = 60;
-const WEIGHT_RECENCY_WINDOW_DAYS = 60;
-const WEIGHT_ALERT_RECENT_DAYS = 14;
-
-const daysBetween = (dateA: string | Date, dateB: string | Date) => {
-  const a = new Date(dateA).getTime();
-  const b = new Date(dateB).getTime();
-  if (Number.isNaN(a) || Number.isNaN(b)) return Number.POSITIVE_INFINITY;
-  return Math.abs(a - b) / MS_PER_DAY;
-};
-
-const median = (values: number[]) => {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 0) {
-    return (sorted[mid - 1] + sorted[mid]) / 2;
-  }
-  return sorted[mid];
-};
-
-const normalizePercent = (value: number) => {
-  if (!Number.isFinite(value)) return 0;
-  if (value <= 1) return clamp(value * 100, 0, 100);
-  return clamp(value, 0, 100);
-};
-
-type PreventiveCare = {
-  vaccinesUpToDate: boolean;
-  parasiteControlCurrent: boolean;
-  vaccinesDueDate?: string;
-  parasiteControlDueDate?: string;
-};
-
-type MedicalHistory = {
-  chronicConditionsCount: number;
-  medicationCompliance: number;
-  recentSymptomsLogged: number;
-};
-
-type WeightStatus = {
-  lastRecordedDaysAgo: number;
-  percentChange: number;
-  hasBaseline: boolean;
-};
-
+// ---------- Vaccination Helpers ----------
 type WeightEntry = {
   weight: number;
   date: string;
   source?: "manual" | "pdf";
 };
 
-const scorePreventive = (p: PreventiveCare) => {
-  const now = new Date();
-  const decayOverdue = (dueDate?: string, maxPoints = 0) => {
-    if (!dueDate) return null;
-    const due = new Date(dueDate);
-    if (Number.isNaN(due.getTime())) return null;
-    const daysOverdue = (now.getTime() - due.getTime()) / MS_PER_DAY;
-    if (daysOverdue <= 0) return maxPoints;
-    const decayWindowDays = 90;
-    return clamp(maxPoints * (1 - daysOverdue / decayWindowDays), 0, maxPoints);
-  };
-
-  let vaccinesScore = p.vaccinesUpToDate ? 35 : 0;
-  const vaccinesDueScore = decayOverdue(p.vaccinesDueDate, 35);
-  if (vaccinesDueScore != null) vaccinesScore = vaccinesDueScore;
-
-  let parasiteScore = p.parasiteControlCurrent ? 15 : 0;
-  const parasiteDueScore = decayOverdue(p.parasiteControlDueDate, 15);
-  if (parasiteDueScore != null) parasiteScore = parasiteDueScore;
-
-  return clamp(vaccinesScore + parasiteScore, 0, 50);
+type VaccinationEntry = {
+  name: string;
+  date?: string;
+  dueDate?: string;
+  source: "manual" | "pdf";
+  recordId?: string;
 };
 
-const scoreMedical = (m: MedicalHistory) => {
-  let score = 30 - Math.min(m.chronicConditionsCount * 5, 15);
-  const compliancePct = normalizePercent(m.medicationCompliance);
-  const compliancePenalty = clamp((100 - compliancePct) / 10, 0, 10);
-  score -= compliancePenalty;
-  const symptomPenalty = clamp(Math.max(m.recentSymptomsLogged - 1, 0), 0, 5);
-  score -= symptomPenalty;
-  return clamp(score, 0, 30);
+const toValidDate = (value?: string) => {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const scoreWeight = (w: WeightStatus) => {
-  const recency = Number.isFinite(w.lastRecordedDaysAgo)
-    ? clamp(10 * (1 - w.lastRecordedDaysAgo / WEIGHT_RECENCY_WINDOW_DAYS), 0, 10)
-    : 0;
-  if (!w.hasBaseline) return clamp(recency, 0, 20);
-
-  const pct = Math.abs(w.percentChange);
-  let stability = 0;
-  if (pct < 3) stability = 10;
-  else if (pct < 6) stability = 8;
-  else if (pct < 10) stability = 5;
-  else if (pct < 15) stability = 2;
-
-  return clamp(recency + stability, 0, 20);
-};
-
-const ProgressBar = ({ value, max }: { value: number; max: number }) => {
-  const { colors } = useTheme();
-  const pct = Math.round((value / max) * 100);
-  return (
-    <View style={{
-      height: 4,
-      width: "100%",
-      backgroundColor: colors.bgSecondary,
-      borderRadius: RADIUS.pill,
-      overflow: "hidden"
-    }}>
-      <View
-        style={{
-          height: "100%",
-          width: `${Math.min(pct, 100)}%`,
-          backgroundColor: colors.accent,
-          borderRadius: RADIUS.pill
-        }}
-      />
-    </View>
-  );
-};
-
-const ToggleRow = ({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: boolean;
-  onChange: (next: boolean) => void;
-}) => {
-  const { colors } = useTheme();
-  return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        paddingVertical: SPACING.sm,
-        paddingHorizontal: SPACING.md,
-        borderRadius: RADIUS.md,
-        borderWidth: 1,
-        borderColor: colors.borderLight,
-        backgroundColor: colors.card,
-        marginBottom: SPACING.sm
-      }}
-    >
-      <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{label}</Text>
-      <Toggle
-        value={value}
-        onValueChange={onChange}
-      />
-    </View>
-  );
-};
-
-const NumberAdjustRow = ({
-  label,
-  value,
-  min,
-  max,
-  step = 1,
-  suffix,
-  onChange,
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step?: number;
-  suffix?: string;
-  onChange: (next: number) => void;
-}) => {
-  const { colors } = useTheme();
-  const decrease = () => onChange(clamp(value - step, min, max));
-  const increase = () => onChange(clamp(value + step, min, max));
-
-  return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        justifyContent: "space-between",
-        paddingVertical: SPACING.sm,
-        paddingHorizontal: SPACING.md,
-        borderRadius: RADIUS.md,
-        borderWidth: 1,
-        borderColor: colors.borderLight,
-        backgroundColor: colors.card,
-        marginBottom: SPACING.sm
-      }}
-    >
-      <View style={{ flex: 1 }}>
-        <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{label}</Text>
-      </View>
-      <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <TouchableOpacity
-          onPress={decrease}
-          disabled={value <= min}
-          style={{
-            padding: SPACING.xs,
-            opacity: value <= min ? 0.3 : 1,
-            marginRight: SPACING.xs
-          }}
-        >
-          <Ionicons name="remove-circle" size={20} color={colors.accent} />
-        </TouchableOpacity>
-        <Text style={{ ...TYPOGRAPHY.base, fontWeight: "600", color: colors.text }}>
-          {value}{suffix ? suffix : ""}
-        </Text>
-        <TouchableOpacity
-          onPress={increase}
-          disabled={value >= max}
-          style={{
-            padding: SPACING.xs,
-            opacity: value >= max ? 0.3 : 1,
-            marginLeft: SPACING.xs
-          }}
-        >
-          <Ionicons name="add-circle" size={20} color={colors.accent} />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+const formatShortDate = (value?: string) => {
+  const date = toValidDate(value);
+  if (!date) return "";
+  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
 const AddHealthRecordModal = ({
@@ -444,6 +259,7 @@ const AddHealthRecordModal = ({
   initialRecord,
   startMode = "manual",
   petId,
+  petName,
   userId,
 }: {
   visible: boolean;
@@ -453,11 +269,13 @@ const AddHealthRecordModal = ({
   initialRecord?: HealthRecord | null;
   startMode?: "manual" | "upload";
   petId?: string | null;
+  petName?: string;
   userId?: string | null;
 }) => {
   const { colors } = useTheme();
   const [title, setTitle] = useState("");
   const [type, setType] = useState<HealthRecord["type"]>("checkup");
+  const [showTypeOptions, setShowTypeOptions] = useState(false);
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [vetName, setVetName] = useState("");
   const [clinicName, setClinicName] = useState("");
@@ -468,6 +286,8 @@ const AddHealthRecordModal = ({
   const [analysisSummary, setAnalysisSummary] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<"success" | "warning" | null>(null);
   const [autoPickDone, setAutoPickDone] = useState(false);
+  const [extractedRawText, setExtractedRawText] = useState<string | null>(null);
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
   const isEdit = !!initialRecord;
   const lastAnalyzedRef = useRef<string | null>(null);
 
@@ -510,16 +330,27 @@ const AddHealthRecordModal = ({
   };
 
   const handleSave = async () => {
-    if (!title.trim()) {
-      Alert.alert("Error", "Please enter a title");
-      return;
-    }
+    const typeLabels: Record<string, string> = {
+      checkup: "Checkup",
+      vaccination: "Vaccination",
+      medication: "Medication",
+      grooming: "Grooming",
+      other: "Health visit",
+    };
+    const derivedTitle =
+      title.trim() ||
+      (type === "vaccination" && extractedVaccinations[0]?.name
+        ? `Vaccination · ${extractedVaccinations[0].name}`
+        : null) ||
+      (clinicName.trim() ? `${typeLabels[type] || type} at ${clinicName.trim()}` : null) ||
+      (vetName.trim() ? `${typeLabels[type] || type} · ${vetName.trim()}` : null) ||
+      `${typeLabels[type] || type} visit`;
     try {
       setIsSaving(true);
       const vetLabel = [vetName.trim(), clinicName.trim()].filter(Boolean).join(" · ");
       await onSave({
       type,
-      title: title.trim(),
+      title: derivedTitle,
       date,
       vet: vetLabel || undefined,
       notes: notes.trim() || undefined,
@@ -535,6 +366,7 @@ const AddHealthRecordModal = ({
     setPdfs([]);
     setAnalysisSummary(null);
     setAnalysisStatus(null);
+    setExtractedRawText(null);
     onClose();
     } catch (error) {
       console.error("HealthScreen: Failed to save health record", error);
@@ -582,7 +414,11 @@ const AddHealthRecordModal = ({
   }, [visible, startMode, autoPickDone, isEdit]);
 
   useEffect(() => {
-    if (!visible || pdfs.length === 0) return;
+    if (!visible) return;
+    if (pdfs.length === 0) {
+      setExtractedRawText(null);
+      return;
+    }
     const latest = pdfs[pdfs.length - 1];
     if (!latest?.id || lastAnalyzedRef.current === latest.id) return;
     lastAnalyzedRef.current = latest.id;
@@ -608,10 +444,15 @@ const AddHealthRecordModal = ({
               text += `\n${content.items.map((item: any) => item.str || "").join(" ")}`;
             }
             const extraction = await analyzeClinicalSummary("", text, petId || undefined);
+            setExtractedRawText(text);
             const visitDate = extraction?.normalized?.visitDate?.value;
             if (visitDate) {
               const formatted = formatLocalDate(visitDate);
               if (formatted) setDate(formatted);
+            }
+            const visitTitle = extraction?.normalized?.visitTitle?.value;
+            if (visitTitle && !title.trim()) {
+              setTitle(visitTitle);
             }
             const doctor = extraction?.normalized?.doctorName?.value;
             const clinic = extraction?.normalized?.clinicName?.value;
@@ -619,12 +460,12 @@ const AddHealthRecordModal = ({
             if (vetLabel) {
               applyVetLabel(vetLabel);
             }
-            if (visitDate || vetLabel) {
-              setAnalysisSummary("Auto-filled visit date and vet details from this PDF.");
+            if (visitDate || vetLabel || visitTitle) {
+              setAnalysisSummary("Auto-filled visit details from this PDF.");
               setAnalysisStatus("success");
               summarySet = true;
             } else {
-              setAnalysisSummary("We couldn't detect a vet name or date. Please enter them manually.");
+              setAnalysisSummary("We couldn't detect visit details. Please enter them manually.");
               setAnalysisStatus("warning");
               summarySet = true;
             }
@@ -665,18 +506,22 @@ const AddHealthRecordModal = ({
           const formatted = formatLocalDate(visitDate);
           if (formatted) setDate(formatted);
         }
+        const visitTitle = extraction?.normalized?.visitTitle?.value;
+        if (visitTitle && !title.trim()) {
+          setTitle(visitTitle);
+        }
         const doctor = extraction?.normalized?.doctorName?.value;
         const clinic = extraction?.normalized?.clinicName?.value;
         const vetLabel = [doctor, clinic].filter(Boolean).join(" · ");
         if (vetLabel) {
           applyVetLabel(vetLabel);
         }
-        if (visitDate || vetLabel) {
-          setAnalysisSummary("Auto-filled visit date and vet details from this PDF.");
+        if (visitDate || vetLabel || visitTitle) {
+          setAnalysisSummary("Auto-filled visit details from this PDF.");
           setAnalysisStatus("success");
           summarySet = true;
         } else {
-          setAnalysisSummary("We couldn't detect a vet name or date. Please enter them manually.");
+          setAnalysisSummary("We couldn't detect visit details. Please enter them manually.");
           setAnalysisStatus("warning");
           summarySet = true;
         }
@@ -704,10 +549,27 @@ const AddHealthRecordModal = ({
     { label: "Grooming", value: "grooming", icon: "cut" },
     { label: "Other", value: "other", icon: "document-text" },
   ];
-  const typeSelectOptions = typeOptions.map(option => ({
-    label: option.label,
-    value: option.value,
-  }));
+  const selectedTypeLabel = typeOptions.find(option => option.value === type)?.label || "Select";
+
+  const extractedVaccinations = useMemo(() => {
+    const entries: Array<{ name: string; date?: string; dueDate?: string }> = [];
+    pdfs.forEach((pdf) => {
+      (pdf.extracted?.vaccinations || []).forEach((entry) => {
+        if (!entry?.name || entry.name.trim().length < 3) return;
+        entries.push({
+          name: entry.name,
+          date: entry.date,
+          dueDate: entry.dueDate,
+        });
+      });
+    });
+    const deduped = new Map<string, { name: string; date?: string; dueDate?: string }>();
+    entries.forEach((entry) => {
+      const key = `${entry.name}|${entry.date || ""}|${entry.dueDate || ""}`;
+      if (!deduped.has(key)) deduped.set(key, entry);
+    });
+    return Array.from(deduped.values());
+  }, [pdfs]);
 
   return (
     <Modal visible={visible} transparent animationType="fade">
@@ -754,31 +616,74 @@ const AddHealthRecordModal = ({
             contentContainerStyle={{ paddingTop: SPACING.sm }}
           >
             <View>
-              <View style={{ marginBottom: SPACING.md, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>
+              <View style={{ marginBottom: SPACING.md }}>
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginBottom: SPACING.xs }}>
                   Record type
                 </Text>
-                <View style={{ position: "relative" }}>
-                  <Select
-                    value={type}
-                    onChange={(v) => setType(v as HealthRecord["type"])}
-                    options={typeSelectOptions}
-                    modalTitle="Record type"
-                    modalIcon="list-outline"
-                    width={170}
-                  />
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => setShowTypeOptions(prev => !prev)}
+                  style={{
+                    borderWidth: 1,
+                    borderColor: colors.borderLight,
+                    backgroundColor: colors.cardSecondary,
+                    borderRadius: RADIUS.lg,
+                    paddingVertical: SPACING.sm,
+                    paddingHorizontal: SPACING.md,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "space-between",
+                  }}
+                >
+                  <Text style={{ ...TYPOGRAPHY.base, color: colors.text }}>{selectedTypeLabel}</Text>
+                  <Ionicons name={showTypeOptions ? "chevron-up" : "chevron-down"} size={16} color={colors.textMuted} />
+                </TouchableOpacity>
+                {showTypeOptions && (
                   <View
-                    pointerEvents="none"
                     style={{
-                      position: "absolute",
-                      right: 10,
-                      top: "50%",
-                      transform: [{ translateY: -8 }],
+                      marginTop: SPACING.xs,
+                      borderWidth: 1,
+                      borderColor: colors.borderLight,
+                      borderRadius: RADIUS.lg,
+                      backgroundColor: colors.card,
+                      overflow: "hidden",
                     }}
                   >
-                    <Ionicons name="chevron-down" size={16} color={colors.textMuted} />
+                    {typeOptions.map((option, index) => {
+                      const isSelected = option.value === type;
+                      return (
+                        <TouchableOpacity
+                          key={option.value}
+                          onPress={() => {
+                            setType(option.value);
+                            setShowTypeOptions(false);
+                          }}
+                          style={{
+                            paddingVertical: SPACING.sm,
+                            paddingHorizontal: SPACING.md,
+                            flexDirection: "row",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            backgroundColor: isSelected ? colors.bgSecondary : "transparent",
+                            borderTopWidth: index === 0 ? 0 : 1,
+                            borderTopColor: colors.borderLight,
+                          }}
+                        >
+                          <View style={{ flexDirection: "row", alignItems: "center" }}>
+                            <Ionicons
+                              name={option.icon as any}
+                              size={16}
+                              color={isSelected ? colors.accent : colors.textMuted}
+                              style={{ marginRight: SPACING.sm }}
+                            />
+                            <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{option.label}</Text>
+                          </View>
+                          {isSelected && <Ionicons name="checkmark" size={16} color={colors.accent} />}
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
-                </View>
+                )}
               </View>
 
               <View style={{ marginBottom: SPACING.md }}>
@@ -890,6 +795,42 @@ const AddHealthRecordModal = ({
                 )}
               </View>
 
+              {type === "vaccination" && extractedVaccinations.length > 0 && (
+                <View style={{ marginBottom: SPACING.md }}>
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
+                    Vaccinations found in this report
+                  </Text>
+                  <View style={{ borderWidth: 1, borderColor: colors.borderLight, borderRadius: RADIUS.lg, overflow: "hidden" }}>
+                    {extractedVaccinations.map((entry, index) => (
+                      <View
+                        key={`${entry.name}-${entry.date || "nodate"}-${entry.dueDate || "nodue"}-${index}`}
+                        style={{
+                          paddingVertical: SPACING.sm,
+                          paddingHorizontal: SPACING.md,
+                          backgroundColor: colors.bgSecondary,
+                          borderTopWidth: index === 0 ? 0 : 1,
+                          borderTopColor: colors.borderLight,
+                        }}
+                      >
+                        <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text }}>
+                          {entry.name}
+                        </Text>
+                        {entry.date ? (
+                          <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
+                            Given: {formatShortDate(entry.date)}
+                          </Text>
+                        ) : null}
+                        {entry.dueDate && (
+                          <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
+                            Due: {formatShortDate(entry.dueDate)}
+                          </Text>
+                        )}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+
               <View style={{ marginBottom: SPACING.md }}>
                 <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
                   Visit title
@@ -938,9 +879,51 @@ const AddHealthRecordModal = ({
               </View>
 
               <View style={{ marginBottom: SPACING.md }}>
-                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.xs }}>
-                  Additional notes (optional)
-                </Text>
+                <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING.xs }}>
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>
+                    Additional notes (optional)
+                  </Text>
+                  <TouchableOpacity
+                    onPress={async () => {
+                      if (isGeneratingSummary) return;
+                      const textToSummarize = extractedRawText || [
+                        title && `Visit: ${title}`,
+                        date && `Date: ${date}`,
+                        vetName && `Veterinarian: ${vetName}`,
+                        clinicName && `Clinic: ${clinicName}`,
+                        notes && `Notes: ${notes}`,
+                      ].filter(Boolean).join(". ");
+                      if (!textToSummarize || textToSummarize.trim().length < 50) {
+                        Alert.alert("Add more details", "Enter at least visit date, vet, clinic, or notes (about 50 characters) so we can generate a summary.");
+                        return;
+                      }
+                      try {
+                        setIsGeneratingSummary(true);
+                        const summary = await generateHealthSummary(textToSummarize, petName || "your pet");
+                          if (summary) {
+                            const prefix = notes.trim() ? "\n\n" : "";
+                            setNotes(prev => prev.trim() ? `${prev}${prefix}${summary}` : summary);
+                        }
+                      } catch (err) {
+                        console.warn("HealthScreen: Generate summary failed", err);
+                        Alert.alert("Error", "Could not generate summary. Please try again.");
+                      } finally {
+                        setIsGeneratingSummary(false);
+                      }
+                    }}
+                    disabled={isGeneratingSummary}
+                    style={{ flexDirection: "row", alignItems: "center", gap: 4 }}
+                  >
+                    {isGeneratingSummary ? (
+                      <ActivityIndicator size="small" color={colors.accent} />
+                    ) : (
+                      <Ionicons name="sparkles" size={14} color={colors.accent} />
+                    )}
+                    <Text style={{ ...TYPOGRAPHY.xs, fontWeight: "600", color: colors.accent }}>
+                      {isGeneratingSummary ? "Generating..." : "Generate summary"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
                 <Input
                   value={notes}
                   onChangeText={setNotes}
@@ -1242,349 +1225,6 @@ const AddAppointmentModal = ({
   );
 };
 
-const ScheduleVetVisitModal = ({
-  visible,
-  onClose,
-  initialValues,
-  onPrefillApplied,
-  onSave,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  initialValues?: {
-    visitType?: "routine" | "vaccination" | "sick" | "followup" | "emergency";
-    date?: string;
-    weight?: string;
-    heartRate?: string;
-    respRate?: string;
-    attitude?: "BAR" | "QAR" | "L" | "D";
-  };
-  onPrefillApplied?: () => void;
-  onSave?: (appointment: VetAppointment) => void;
-}) => {
-  const { colors } = useTheme();
-  const [visitType, setVisitType] = useState<"routine" | "vaccination" | "sick" | "followup" | "emergency">("routine");
-  const [vetChoice, setVetChoice] = useState<"saved" | "discover">("discover");
-  const [clinicName, setClinicName] = useState("");
-  const [doctorName, setDoctorName] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
-  const [time, setTime] = useState("");
-  const [addressLine1, setAddressLine1] = useState("");
-  const [city, setCity] = useState("");
-  const [state, setState] = useState("");
-  const [zip, setZip] = useState("");
-  const [notes, setNotes] = useState("");
-  const [weight, setWeight] = useState("");
-  const [heartRate, setHeartRate] = useState("");
-  const [respRate, setRespRate] = useState("");
-  const [attitude, setAttitude] = useState<"" | "BAR" | "QAR" | "L" | "D">("");
-  const visitTypeOptions: { label: string; value: typeof visitType }[] = [
-    { label: "Routine checkup", value: "routine" },
-    { label: "Vaccination", value: "vaccination" },
-    { label: "Sick visit", value: "sick" },
-    { label: "Follow-up", value: "followup" },
-    { label: "Emergency", value: "emergency" },
-  ];
-  const attitudeOptions: { label: string; value: "BAR" | "QAR" | "L" | "D" }[] = [
-    { label: "BAR", value: "BAR" },
-    { label: "QAR", value: "QAR" },
-    { label: "L", value: "L" },
-    { label: "D", value: "D" },
-  ];
-
-  const resetForm = () => {
-    setVisitType("routine");
-    setVetChoice("discover");
-    setClinicName("");
-    setDoctorName("");
-    setDate(new Date().toISOString().split("T")[0]);
-    setTime("");
-    setAddressLine1("");
-    setCity("");
-    setState("");
-    setZip("");
-    setNotes("");
-    setWeight("");
-    setHeartRate("");
-    setRespRate("");
-    setAttitude("");
-  };
-
-  const handleSave = () => {
-    const visitLabel = visitTypeOptions.find((option) => option.value === visitType)?.label || "Vet Visit";
-    onSave?.({
-      id: `${Date.now()}`,
-      title: clinicName.trim() || visitLabel,
-      appointmentDate: date,
-      appointmentTime: time.trim() || undefined,
-      clinicName: clinicName.trim() || undefined,
-      doctorName: doctorName.trim() || undefined,
-      addressLine1: addressLine1.trim() || undefined,
-      city: city.trim() || undefined,
-      state: state.trim() || undefined,
-      zip: zip.trim() || undefined,
-      notes: notes.trim() || undefined,
-      status: "scheduled",
-    });
-    Alert.alert("Saved", "This vet visit is saved locally for now.");
-    resetForm();
-    onClose();
-  };
-
-  useEffect(() => {
-    if (!visible) return;
-    resetForm();
-    if (initialValues) {
-      if (initialValues.visitType) setVisitType(initialValues.visitType);
-      if (initialValues.date) setDate(initialValues.date);
-      if (initialValues.weight) setWeight(initialValues.weight);
-      if (initialValues.heartRate) setHeartRate(initialValues.heartRate);
-      if (initialValues.respRate) setRespRate(initialValues.respRate);
-      if (initialValues.attitude) setAttitude(initialValues.attitude);
-      onPrefillApplied?.();
-    }
-  }, [visible]);
-
-  return (
-    <Modal visible={visible} transparent animationType="slide">
-      <View style={{ flex: 1, backgroundColor: colors.black + "80", justifyContent: "flex-end" }}>
-        <View style={{ 
-          backgroundColor: colors.card,
-          borderTopLeftRadius: RADIUS.xl,
-          borderTopRightRadius: RADIUS.xl,
-          paddingTop: SPACING.lg,
-          paddingHorizontal: SPACING.lg,
-          paddingBottom: SPACING.xl,
-          maxHeight: "90%"
-        }}>
-          <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING.lg }}>
-            <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
-              Schedule Vet Visit
-            </Text>
-            <TouchableOpacity onPress={onClose}>
-              <Ionicons name="close" size={24} color={colors.textMuted} />
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: SPACING.md }}>
-            <View style={{ gap: SPACING.md }}>
-              <View>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Visit Type
-                </Text>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                  <View style={{ flexDirection: "row" }}>
-                    {visitTypeOptions.map((option) => (
-                      <TouchableOpacity
-                        key={option.value}
-                        onPress={() => setVisitType(option.value)}
-                        style={{
-                          paddingVertical: SPACING.sm,
-                          paddingHorizontal: SPACING.md,
-                          backgroundColor: visitType === option.value ? colors.accent : colors.bgSecondary,
-                          borderRadius: RADIUS.md,
-                          marginRight: SPACING.sm,
-                        }}
-                      >
-                        <Text style={{
-                          ...TYPOGRAPHY.sm,
-                          color: visitType === option.value ? colors.white : colors.text,
-                          fontWeight: visitType === option.value ? "600" : "500"
-                        }}>
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </ScrollView>
-              </View>
-
-              <View>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Choose Vet
-                </Text>
-                <View style={{ flexDirection: "row", gap: SPACING.sm }}>
-                  <TouchableOpacity
-                    onPress={() => setVetChoice("saved")}
-                    style={{
-                      flex: 1,
-                      paddingVertical: SPACING.sm,
-                      alignItems: "center",
-                      backgroundColor: vetChoice === "saved" ? colors.accent : colors.bgSecondary,
-                      borderRadius: RADIUS.md,
-                    }}
-                  >
-                    <Text style={{
-                      ...TYPOGRAPHY.sm,
-                      color: vetChoice === "saved" ? colors.white : colors.text,
-                      fontWeight: vetChoice === "saved" ? "600" : "500"
-                    }}>
-                      Use my vet
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={() => setVetChoice("discover")}
-                    style={{
-                      flex: 1,
-                      paddingVertical: SPACING.sm,
-                      alignItems: "center",
-                      backgroundColor: vetChoice === "discover" ? colors.accent : colors.bgSecondary,
-                      borderRadius: RADIUS.md,
-                    }}
-                  >
-                    <Text style={{
-                      ...TYPOGRAPHY.sm,
-                      color: vetChoice === "discover" ? colors.white : colors.text,
-                      fontWeight: vetChoice === "discover" ? "600" : "500"
-                    }}>
-                      Discover
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: SPACING.xs }}>
-                  {vetChoice === "saved"
-                    ? "Saved vet auto-fill will be available in phase 2."
-                    : "Clinic search will be available in phase 2. Enter details below for now."}
-                </Text>
-              </View>
-
-              <Input
-                label="Clinic name"
-                value={clinicName}
-                onChangeText={setClinicName}
-                placeholder="e.g., City Animal Clinic"
-              />
-              <Input
-                label="Weight (lb)"
-                value={weight}
-                onChangeText={setWeight}
-                placeholder="e.g., 25.4"
-                keyboardType="numeric"
-              />
-              <Input
-                label="Heart Rate (bpm)"
-                value={heartRate}
-                onChangeText={setHeartRate}
-                placeholder="e.g., 140"
-                keyboardType="numeric"
-              />
-              <Input
-                label="Respiratory Rate (breaths/min)"
-                value={respRate}
-                onChangeText={setRespRate}
-                placeholder="e.g., 35"
-                keyboardType="numeric"
-              />
-              <View>
-                <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", marginBottom: SPACING.sm, color: colors.text }}>
-                  Attitude
-                </Text>
-                <View style={{ flexDirection: "row" }}>
-                  {attitudeOptions.map((option) => (
-                    <TouchableOpacity
-                      key={option.value}
-                      onPress={() => setAttitude(option.value)}
-                      style={{
-                        paddingVertical: SPACING.sm,
-                        paddingHorizontal: SPACING.md,
-                        backgroundColor: attitude === option.value ? colors.accent : colors.bgSecondary,
-                        borderRadius: RADIUS.md,
-                        marginRight: SPACING.sm,
-                      }}
-                    >
-                      <Text style={{
-                        ...TYPOGRAPHY.sm,
-                        color: attitude === option.value ? colors.white : colors.text,
-                        fontWeight: attitude === option.value ? "600" : "500"
-                      }}>
-                        {option.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: SPACING.xs }}>
-                  BAR = Bright Alert Responsive · QAR = Quiet Alert Responsive
-                </Text>
-              </View>
-              <Input
-                label="Doctor"
-                value={doctorName}
-                onChangeText={setDoctorName}
-                placeholder="e.g., Dr. Patel"
-              />
-              <Input
-                label="Date"
-                value={date}
-                onChangeText={setDate}
-                placeholder="YYYY-MM-DD"
-              />
-              <Input
-                label="Time"
-                value={time}
-                onChangeText={setTime}
-                placeholder="e.g., 2:00 PM"
-              />
-              <Input
-                label="Address"
-                value={addressLine1}
-                onChangeText={setAddressLine1}
-                placeholder="Street address"
-              />
-              <View style={{ flexDirection: "row", gap: SPACING.sm }}>
-                <View style={{ flex: 1 }}>
-                  <Input
-                    label="City"
-                    value={city}
-                    onChangeText={setCity}
-                    placeholder="City"
-                  />
-                </View>
-                <View style={{ width: 90 }}>
-                  <Input
-                    label="State"
-                    value={state}
-                    onChangeText={setState}
-                    placeholder="State"
-                  />
-                </View>
-              </View>
-              <Input
-                label="ZIP"
-                value={zip}
-                onChangeText={setZip}
-                placeholder="ZIP code"
-                keyboardType="number-pad"
-              />
-              <Input
-                label="Notes"
-                value={notes}
-                onChangeText={setNotes}
-                placeholder="Reason or notes"
-                multiline
-                numberOfLines={3}
-              />
-            </View>
-          </ScrollView>
-
-          <View style={{ flexDirection: "row", marginTop: SPACING.lg }}>
-            <Button
-              title="Cancel"
-              onPress={onClose}
-              style={{ flex: 1, marginRight: SPACING.sm, backgroundColor: colors.bgSecondary }}
-              titleStyle={{ color: colors.text }}
-            />
-            <Button
-              title="Save"
-              onPress={handleSave}
-              style={{ flex: 1, marginLeft: SPACING.sm }}
-            />
-          </View>
-        </View>
-      </View>
-    </Modal>
-  );
-};
-
 const loadPdfJs = (() => {
   let loader: Promise<any> | null = null;
   return () => {
@@ -1880,9 +1520,7 @@ export default function HealthScreen() {
   const [actionSheetFooter, setActionSheetFooter] = useState<string | undefined>(undefined);
   const [highlightedRecordId, setHighlightedRecordId] = useState<string | null>(null);
   const [pendingRecordId, setPendingRecordId] = useState<string | null>(null);
-  const [showVetVisitModal, setShowVetVisitModal] = useState(false);
   const [healthRecordStartMode, setHealthRecordStartMode] = useState<"manual" | "upload">("manual");
-  const [showScoreBreakdown, setShowScoreBreakdown] = useState(false);
   const [showManualStatusModal, setShowManualStatusModal] = useState(false);
   const [manualStatus, setManualStatus] = useState<{
     updatedAt: string;
@@ -1898,66 +1536,33 @@ export default function HealthScreen() {
     respiratoryRate?: string;
     attitude?: string;
   } | null>(null);
-  const [summaryPrefill, setSummaryPrefill] = useState<{
-    visitType?: "routine" | "vaccination" | "sick" | "followup" | "emergency";
-    date?: string;
-    weight?: string;
-    heartRate?: string;
-    respRate?: string;
-    attitude?: "BAR" | "QAR" | "L" | "D";
-  } | null>(null);
   const [selectedAttachment, setSelectedAttachment] = useState<{ type: "pdf"; url: string; name: string } | null>(null);
   const [showAttachmentViewer, setShowAttachmentViewer] = useState(false);
   const [appointments, setAppointments] = useState<VetAppointment[]>([]);
   const [showAppointmentModal, setShowAppointmentModal] = useState(false);
   const [editingAppointment, setEditingAppointment] = useState<VetAppointment | null>(null);
-  const [preventive, setPreventive] = useState<PreventiveCare>({
-    vaccinesUpToDate: true,
-    parasiteControlCurrent: true,
-  });
-  const [medical, setMedical] = useState<MedicalHistory>({
-    chronicConditionsCount: 1,
-    medicationCompliance: 80,
-    recentSymptomsLogged: 1,
-  });
   const [weightHistory, setWeightHistory] = useState<WeightEntry[]>([]);
-  const [activeWellnessTab, setActiveWellnessTab] = useState<"preventive" | "medical" | "weight">("preventive");
-  const [wellnessHydrated, setWellnessHydrated] = useState(false);
-  const wellnessLoadRef = useRef({ inputs: false, weight: false });
-  const wellnessInitialScoreRef = useRef<number | null>(null);
-  const wellnessScoreSeededRef = useRef(false);
-  const wellnessUserChangedRef = useRef(false);
-  const markWellnessUserChanged = useCallback(() => {
-    wellnessUserChangedRef.current = true;
-  }, []);
-
-  useEffect(() => {
-    wellnessLoadRef.current = { inputs: false, weight: false };
-    wellnessInitialScoreRef.current = null;
-    wellnessScoreSeededRef.current = false;
-    setWellnessHydrated(false);
-  }, [user?.id, activePetId]);
-
-  useEffect(() => {
-    if (!user?.id || !activePetId) return;
-    const loadWellnessInputs = async () => {
-      try {
-        const remote = await fetchWellnessInputs(user.id, activePetId);
-        if (remote?.preventive) setPreventive(remote.preventive);
-        if (remote?.medical) setMedical(remote.medical);
-        if (typeof remote?.score === "number") {
-          wellnessInitialScoreRef.current = remote.score;
-        }
-        wellnessLoadRef.current.inputs = true;
-        setWellnessHydrated(wellnessLoadRef.current.inputs && wellnessLoadRef.current.weight);
-      } catch (error) {
-        console.error("HealthScreen: Failed to load wellness inputs:", error);
-      }
-    };
-    loadWellnessInputs();
-  }, [user?.id, activePetId]);
 
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [headerCompact, setHeaderCompact] = useState(false);
+  const headerCompactRef = useRef(false);
+  const SCROLL_DOWN_THRESHOLD = 50;
+  const SCROLL_UP_THRESHOLD = 35;
+  const handleHealthScroll = useCallback((event: any) => {
+    const y = event.nativeEvent?.contentOffset?.y ?? 0;
+    if (y <= 0) {
+      if (headerCompactRef.current) {
+        headerCompactRef.current = false;
+        setHeaderCompact(false);
+      }
+    } else {
+      const nextCompact = y >= SCROLL_DOWN_THRESHOLD ? true : y <= SCROLL_UP_THRESHOLD ? false : headerCompactRef.current;
+      if (nextCompact !== headerCompactRef.current) {
+        headerCompactRef.current = nextCompact;
+        setHeaderCompact(nextCompact);
+      }
+    }
+  }, []);
 
   const loadWeightHistory = useCallback(async () => {
     if (!activePetId) {
@@ -1990,13 +1595,12 @@ export default function HealthScreen() {
     const merged = normalizeWeightEntries([...remoteEntries, ...localEntries]);
     setWeightHistory(merged);
 
-    wellnessLoadRef.current.weight = true;
-    setWellnessHydrated(wellnessLoadRef.current.inputs && wellnessLoadRef.current.weight);
-
     if (user?.id && merged.length > remoteEntries.length) {
-      upsertWeightHistory(user.id, activePetId, merged).catch((error) => {
-        console.warn("HealthScreen: Failed to sync weight history", error);
-      });
+      upsertWeightHistory(user.id, activePetId, merged)
+        .then(() => checkWeightChangeAndNotify(user.id, activePetId))
+        .catch((error) => {
+          console.warn("HealthScreen: Failed to sync weight history", error);
+        });
     }
   }, [activePetId, user?.id]);
 
@@ -2016,11 +1620,18 @@ export default function HealthScreen() {
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      await loadWeightHistory();
+      await Promise.all([
+        loadWeightHistory(),
+        user?.id && activePetId
+          ? fetchVetAppointments(user.id, activePetId).then(setAppointments)
+          : Promise.resolve(),
+      ]);
+    } catch (e) {
+      console.warn("HealthScreen: Refresh failed", e);
     } finally {
       setIsRefreshing(false);
     }
-  }, [loadWeightHistory]);
+  }, [loadWeightHistory, user?.id, activePetId]);
 
   useEffect(() => {
     if (!user?.id || !activePetId) return;
@@ -2118,220 +1729,6 @@ export default function HealthScreen() {
     loadHealthRecords();
   }, [activePetId, user?.id]);
 
-  const weightMetrics = useMemo(() => {
-    if (weightHistory.length === 0) {
-      return {
-        hasHistory: false,
-        lastRecordedDaysAgo: 999,
-        percentChange: 0,
-        hasBaseline: false,
-        baselineWeight: null as number | null,
-        baselineSampleCount: 0,
-        recentSampleCount: 0,
-        lastWeight: null as number | null,
-        previousWeight: null as number | null,
-        lastDate: null as string | null,
-      };
-    }
-    const sorted = [...weightHistory].sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
-    );
-    const latest = sorted[0];
-    const previous = sorted[1];
-    const now = new Date();
-    const latestDate = new Date(latest.date);
-    const lastRecordedDaysAgo = Number.isNaN(latestDate.getTime())
-      ? 999
-      : Math.max(0, Math.round(daysBetween(now, latestDate)));
-
-    const recentWindowStart = new Date(now.getTime() - WEIGHT_BASELINE_WINDOW_DAYS * MS_PER_DAY);
-    const recent = sorted.filter((entry) => {
-      const entryDate = new Date(entry.date);
-      return !Number.isNaN(entryDate.getTime()) && entryDate >= recentWindowStart;
-    });
-    const baselineCandidates = recent.filter((entry, idx) => idx !== 0);
-    const baselineWeight = median(baselineCandidates.map((entry) => entry.weight));
-    const hasBaseline = baselineWeight != null && baselineWeight !== 0;
-    const percentChange = hasBaseline
-      ? ((latest.weight - (baselineWeight as number)) / (baselineWeight as number)) * 100
-      : 0;
-
-    return {
-      hasHistory: true,
-      lastRecordedDaysAgo,
-      percentChange,
-      hasBaseline,
-      baselineWeight,
-      baselineSampleCount: baselineCandidates.length,
-      recentSampleCount: recent.length,
-      lastWeight: latest.weight,
-      previousWeight: previous?.weight ?? null,
-      lastDate: latest.date,
-    };
-  }, [weightHistory]);
-
-  const preventiveScore = useMemo(() => scorePreventive(preventive), [preventive]);
-  const medicalScore = useMemo(() => scoreMedical(medical), [medical]);
-  const weightScore = useMemo(
-    () => (weightMetrics.hasHistory ? scoreWeight(weightMetrics) : 0),
-    [weightMetrics]
-  );
-  const totalScore = useMemo(
-    () => clamp(Math.round(preventiveScore + medicalScore + weightScore), 0, 100),
-    [preventiveScore, medicalScore, weightScore]
-  );
-  
-  const getScoreLabel = (score: number) => {
-    if (score >= 90) return { text: "Excellent", color: colors.success };
-    if (score >= 75) return { text: "Good", color: colors.accent };
-    if (score >= 60) return { text: "Fair", color: "#f59e0b" };
-    return { text: "Needs Attention", color: colors.danger };
-  };
-  
-  const scoreLabel = useMemo(() => getScoreLabel(totalScore), [totalScore, colors]);
-  const displayScore = wellnessHydrated ? totalScore : null;
-  const displayScoreLabel = wellnessHydrated ? scoreLabel : { text: "Loading", color: colors.textMuted };
-
-  useEffect(() => {
-    if (!user?.id || !activePetId) return;
-    if (!wellnessHydrated) return;
-    const timer = setTimeout(() => {
-      upsertWellnessInputs(user.id, activePetId, {
-        preventive,
-        medical,
-        score: totalScore,
-      }).catch((error) => {
-        console.error("HealthScreen: Failed to save wellness inputs:", error);
-      });
-    }, 500);
-    return () => clearTimeout(timer);
-  }, [user?.id, activePetId, preventive, medical, totalScore, wellnessHydrated]);
-
-  useEffect(() => {
-    if (!user?.id || !activePetId) return;
-    if (!wellnessHydrated) return;
-    let cancelled = false;
-    const run = async () => {
-      try {
-        const stored = await storage.getItem(SETTINGS_KEY);
-        const settings = stored ? JSON.parse(stored) : {};
-        const weightAlertEnabled = settings.weightAlert !== undefined ? settings.weightAlert : true;
-        const weightThreshold = settings.weightThreshold !== undefined ? settings.weightThreshold : 5;
-        const wellnessUpdatesEnabled = settings.wellnessUpdates !== undefined ? settings.wellnessUpdates : true;
-        const wellnessCadence =
-          settings.wellnessCadence === "monthly" || settings.wellnessCadence === "weekly"
-            ? settings.wellnessCadence
-            : "weekly";
-
-        const weightAlertKey = `@kasper_weight_alert_last_${user.id}_${activePetId}`;
-        const wellnessScoreKey = `@kasper_wellness_score_last_${user.id}_${activePetId}`;
-        const wellnessCadenceKey = `@kasper_wellness_cadence_last_${user.id}_${activePetId}`;
-
-        if (weightAlertEnabled && weightMetrics.hasHistory && weightHistory.length >= 3) {
-          const latestDate = weightMetrics.lastDate;
-          const latestWeight = weightMetrics.lastWeight;
-          const baselineWeight = weightMetrics.baselineWeight;
-          const daysSinceLatest = weightMetrics.lastRecordedDaysAgo;
-          const hasBaseline = weightMetrics.hasBaseline;
-
-          if (latestDate && latestWeight != null && baselineWeight != null && hasBaseline) {
-            if (daysSinceLatest <= WEIGHT_ALERT_RECENT_DAYS) {
-              const lastNotified = await storage.getItem(weightAlertKey);
-              if (!lastNotified || lastNotified !== latestDate) {
-                const pctLatest = Math.abs(((latestWeight - baselineWeight) / baselineWeight) * 100);
-                if (pctLatest >= weightThreshold) {
-                  const now = new Date();
-                  const recentWeights = weightHistory.filter((entry) => {
-                    return daysBetween(now, entry.date) <= WEIGHT_ALERT_RECENT_DAYS;
-                  });
-                  const latestDirection = Math.sign(latestWeight - baselineWeight);
-                  const confirmed = recentWeights.some((entry) => {
-                    if (entry.date === latestDate) return false;
-                    const pct = Math.abs(((entry.weight - baselineWeight) / baselineWeight) * 100);
-                    const direction = Math.sign(entry.weight - baselineWeight);
-                    return pct >= weightThreshold && direction === latestDirection;
-                  });
-
-                  if (confirmed) {
-                    await insertNotification(user.id, {
-                      petId: activePetId,
-                      kind: "health",
-                      title: "Weight change detected",
-                      message: `Weight changed by ${pctLatest.toFixed(1)}% (threshold ±${weightThreshold}%).`,
-                    });
-                  } else {
-                    await insertNotification(user.id, {
-                      petId: activePetId,
-                      kind: "health",
-                      title: "Re-weigh to confirm",
-                      message: "A weight change was detected. Please log another weight to confirm.",
-                    });
-                  }
-                  await storage.setItem(weightAlertKey, latestDate);
-                }
-              }
-            }
-          }
-        }
-
-        if (wellnessUpdatesEnabled) {
-          const now = Date.now();
-          const cadenceMs = wellnessCadence === "monthly"
-            ? 1000 * 60 * 60 * 24 * 30
-            : 1000 * 60 * 60 * 24 * 7;
-          const lastCadenceRaw = await storage.getItem(wellnessCadenceKey);
-          const lastCadenceTs = lastCadenceRaw ? new Date(lastCadenceRaw).getTime() : 0;
-          const cadenceDue = !Number.isFinite(lastCadenceTs) || now - lastCadenceTs >= cadenceMs;
-
-          if (cadenceDue) {
-            await insertNotification(user.id, {
-              petId: activePetId,
-              kind: "health",
-              title: wellnessCadence === "monthly" ? "Monthly wellness summary" : "Weekly wellness summary",
-              message: `Current wellness score: ${totalScore}/100.`,
-            });
-            await storage.setItem(wellnessCadenceKey, new Date(now).toISOString());
-          }
-
-          const lastScoreRaw = await storage.getItem(wellnessScoreKey);
-          if (!wellnessScoreSeededRef.current) {
-            const seedScore = wellnessInitialScoreRef.current ?? totalScore;
-            await storage.setItem(wellnessScoreKey, `${seedScore}`);
-            wellnessScoreSeededRef.current = true;
-          } else if (!lastScoreRaw) {
-            await storage.setItem(wellnessScoreKey, `${totalScore}`);
-          } else if (wellnessUserChangedRef.current) {
-            const lastScore = Number(lastScoreRaw);
-            if (!Number.isNaN(lastScore) && Math.abs(totalScore - lastScore) >= 1) {
-              await insertNotification(user.id, {
-                petId: activePetId,
-                kind: "health",
-                title: "Wellness score updated",
-                message: `Score changed from ${lastScore} to ${totalScore}.`,
-              });
-            }
-            await storage.setItem(wellnessScoreKey, `${totalScore}`);
-            wellnessUserChangedRef.current = false;
-          }
-        }
-      } catch (error) {
-        if (!cancelled) {
-          console.warn("HealthScreen: Failed to evaluate health alerts", error);
-        }
-      }
-    };
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.id, activePetId, weightHistory, weightMetrics, totalScore]);
-
-  const wellnessTabs: { key: "preventive" | "medical" | "weight"; label: string }[] = [
-    { key: "preventive", label: "Preventive Care" },
-    { key: "medical", label: "Medical History" },
-    { key: "weight", label: "Weight & Check-ins" },
-  ];
-
   const filteredRecords = healthRecords.filter(record => 
     selectedFilter === "all" || record.type === selectedFilter
   );
@@ -2408,6 +1805,91 @@ export default function HealthScreen() {
     return latestStatusMeta;
   }, [latestStatusMeta, latestWeightTs]);
 
+  const latestVisitRecord = useMemo(() => {
+    if (!healthRecords.length) return null;
+    const sorted = [...healthRecords].sort((a, b) => {
+      const aDate = new Date(a.date || a.createdAt || 0).getTime();
+      const bDate = new Date(b.date || b.createdAt || 0).getTime();
+      return bDate - aDate;
+    });
+    return sorted[0] || null;
+  }, [healthRecords]);
+
+  const latestVisitExtracted = useMemo(() => {
+    if (!latestVisitRecord?.pdfs?.length) return null;
+    return latestVisitRecord.pdfs.map((pdf) => pdf.extracted).find(Boolean) || null;
+  }, [latestVisitRecord]);
+
+  const latestVisitDetails = useMemo(() => {
+    if (!latestVisitRecord) {
+      return {
+        clinicName: "",
+        doctorName: "",
+        visitDate: "",
+      };
+    }
+    const extractedClinic = latestVisitExtracted?.clinicName?.value?.trim() || "";
+    const extractedDoctor = latestVisitExtracted?.doctorName?.value?.trim() || "";
+    let clinicName = extractedClinic;
+    let doctorName = extractedDoctor;
+    if ((!clinicName || !doctorName) && latestVisitRecord.vet) {
+      const parts = latestVisitRecord.vet.split("·").map((part) => part.trim());
+      if (!doctorName && parts[0]) doctorName = parts[0];
+      if (!clinicName && parts[1]) clinicName = parts[1];
+      if (!clinicName && parts[0] && !doctorName) clinicName = parts[0];
+    }
+    const visitDate = latestVisitExtracted?.visitDate?.value || latestVisitRecord.date || "";
+    return { clinicName, doctorName, visitDate };
+  }, [latestVisitRecord, latestVisitExtracted]);
+
+  const vaccinationEntries = useMemo(() => {
+    const entries: VaccinationEntry[] = [];
+    healthRecords.forEach((record) => {
+      if (record.type === "vaccination") {
+        entries.push({
+          name: record.title || "Vaccination",
+          date: record.date,
+          source: "manual",
+          recordId: record.id,
+        });
+      }
+      (record.pdfs || []).forEach((pdf) => {
+        (pdf.extracted?.vaccinations || []).forEach((vax) => {
+          if (!vax?.name) return;
+          entries.push({
+            name: vax.name,
+            date: vax.date,
+            dueDate: vax.dueDate,
+            source: "pdf",
+            recordId: record.id,
+          });
+        });
+      });
+    });
+    const deduped = new Map<string, VaccinationEntry>();
+    entries.forEach((entry) => {
+      const key = `${entry.name}|${entry.date || ""}|${entry.dueDate || ""}|${entry.source}`;
+      if (!deduped.has(key)) deduped.set(key, entry);
+    });
+    return Array.from(deduped.values()).sort((a, b) => {
+      const aTs = new Date(a.date || a.dueDate || 0).getTime();
+      const bTs = new Date(b.date || b.dueDate || 0).getTime();
+      return bTs - aTs;
+    });
+  }, [healthRecords]);
+
+  const nextVaccinationDue = useMemo(() => {
+    const today = new Date();
+    const upcoming = vaccinationEntries
+      .filter((entry) => entry.dueDate && toValidDate(entry.dueDate))
+      .map((entry) => ({ entry, ts: new Date(entry.dueDate as string).getTime() }))
+      .filter(({ ts }) => ts >= today.getTime())
+      .sort((a, b) => a.ts - b.ts)[0];
+    return upcoming?.entry || null;
+  }, [vaccinationEntries]);
+
+  
+
   useEffect(() => {
     if (!pendingRecordId || healthRecords.length === 0) return;
     const exists = healthRecords.some(record => record.id === pendingRecordId);
@@ -2426,8 +1908,9 @@ export default function HealthScreen() {
       if (!raw) return;
       try {
         const parsed = JSON.parse(raw);
-        setSummaryPrefill(parsed);
-        setShowVetVisitModal(true);
+        const vetKey = `@kasper_schedule_vet_initial_${user.id}_${activePetId}`;
+        await storage.setItem(vetKey, JSON.stringify(parsed));
+        navigateTo("ScheduleVetVisit");
       } catch {
         return;
       } finally {
@@ -2442,16 +1925,12 @@ export default function HealthScreen() {
       setAppointments([]);
       return;
     }
-    const key = `@kasper_vet_appointments_${user.id}_${activePetId}`;
     const loadAppointments = async () => {
-      const raw = await storage.getItem(key);
-      if (!raw) {
-        setAppointments([]);
-        return;
-      }
       try {
-        setAppointments(JSON.parse(raw));
-      } catch {
+        const data = await fetchVetAppointments(user.id, activePetId);
+        setAppointments(data);
+      } catch (e) {
+        console.warn("HealthScreen: Failed to load vet appointments", e);
         setAppointments([]);
       }
     };
@@ -2511,7 +1990,6 @@ export default function HealthScreen() {
         ? Number(payload.weight.value)
         : Number(payload.weight);
       if (Number.isFinite(weightValue)) {
-        markWellnessUserChanged();
         addWeightEntry({ weight: weightValue, date: next.updatedAt, source: "manual" });
       }
     }
@@ -2572,9 +2050,11 @@ export default function HealthScreen() {
     const isValidEntry =
       Number.isFinite(entry.weight) && !Number.isNaN(new Date(entry.date).getTime());
     if (isValidEntry && user?.id && activePetId) {
-      upsertWeightHistory(user.id, activePetId, [entry]).catch((error) => {
-        console.warn("HealthScreen: Failed to sync weight entry", error);
-      });
+      upsertWeightHistory(user.id, activePetId, [entry])
+        .then(() => checkWeightChangeAndNotify(user.id, activePetId))
+        .catch((error) => {
+          console.warn("HealthScreen: Failed to sync weight entry", error);
+        });
     }
   };
 
@@ -2684,14 +2164,30 @@ export default function HealthScreen() {
       const inferredVet = buildVetLabel(extracted);
       const resolvedVet = recordData.vet || inferredVet;
 
+      const nextRecordData = { ...recordData };
+      if (recordData.type === "vaccination" && extracted?.vaccinations?.length) {
+        const list = extracted.vaccinations
+          .map((entry: any) => {
+            const due = entry.dueDate ? ` (Due ${entry.dueDate})` : "";
+            return `- ${entry.name}${due}`;
+          })
+          .join("\n");
+        if (!nextRecordData.title?.trim()) {
+          nextRecordData.title = `Vaccination · ${extracted.vaccinations[0].name}`;
+        }
+        if (!nextRecordData.notes?.trim()) {
+          nextRecordData.notes = list;
+        }
+      }
+
       const inserted = await insertHealthRecord(user.id, activePetId, {
-        ...recordData,
+        ...nextRecordData,
         vet: resolvedVet,
         pdfs: attachments.length > 0 ? attachments : undefined,
       });
 
       const newRecord: HealthRecord = {
-        ...recordData,
+        ...nextRecordData,
         id: inserted.id,
         vet: resolvedVet,
         pdfs: attachments.length > 0 ? attachments : undefined,
@@ -2735,7 +2231,6 @@ export default function HealthScreen() {
         if (extractedWeight) {
           const weightValue = Number(extractedWeight);
           if (Number.isFinite(weightValue)) {
-            markWellnessUserChanged();
             addWeightEntry({
               weight: weightValue,
               date: toValidDateIso(recordData.date),
@@ -2912,9 +2407,11 @@ export default function HealthScreen() {
         title="Health"
         actionIcon="paw"
         onActionPress={() => setShowAddModal(true)}
-        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        centerTitle={headerCompact}
+        titleStyle={headerCompact ? { ...TYPOGRAPHY.sm, fontWeight: "400" } : { ...TYPOGRAPHY.base, fontWeight: "400" }}
         paddingTop={SPACING.lg}
-        paddingBottom={SPACING.lg}
+        paddingBottom={headerCompact ? SPACING.sm : SPACING.lg}
+        insetSeparator
       />
 
       
@@ -2930,6 +2427,8 @@ export default function HealthScreen() {
         alwaysBounceVertical={false}
         nestedScrollEnabled={true}
         keyboardShouldPersistTaps="handled"
+        onScroll={handleHealthScroll}
+        scrollEventThrottle={0}
         refreshControl={
           <RefreshControl
             refreshing={isRefreshing}
@@ -2939,240 +2438,171 @@ export default function HealthScreen() {
         }
       >
         {/* Header */}
-        <View style={{ 
-          paddingHorizontal: SPACING.lg,
-          paddingTop: SPACING.md,
-          paddingBottom: SPACING.lg,
-          backgroundColor: colors.bg,
-        }}>
+        <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.md, paddingBottom: SPACING.sm, backgroundColor: colors.bg }}>
           <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>
             Track {petNamePossessive} health and medical history
           </Text>
         </View>
 
-        {/* Wellness Score */}
-        <View style={{ 
-          paddingHorizontal: SPACING.lg,
-          marginBottom: SPACING.lg
-        }}>
-          <Card>
-            <View style={{ paddingVertical: SPACING.md }}>
-              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
-                <View>
-                  <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
-                    Wellness Score
-                  </Text>
-                  {healthStatusMeta && (
-                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 4 }}>
-                      Updated {timeAgo(healthStatusMeta.ts)} ago
-                    </Text>
-                  )}
-                  <View style={{ flexDirection: "row", alignItems: "flex-end", marginTop: SPACING.sm }}>
-                    <Text style={{ ...TYPOGRAPHY["3xl"], fontWeight: "800", color: displayScoreLabel.color }}>
-                      {displayScore ?? "--"}
-                    </Text>
-                    <Text style={{ ...TYPOGRAPHY.base, color: colors.textMuted, marginLeft: SPACING.sm }}>
-                      {displayScoreLabel.text}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={{ width: 120, height: 120, alignItems: "center", justifyContent: "center" }}>
-                  <Svg width="120" height="120" viewBox="0 0 120 120">
-                    <Circle cx="60" cy="60" r="52" stroke={colors.borderLight} strokeWidth="10" fill="none" />
-                    <Circle
-                      cx="60"
-                      cy="60"
-                      r="52"
-                      stroke={colors.accent}
-                      strokeWidth="10"
-                      strokeLinecap="round"
-                      fill="none"
-                      strokeDasharray={2 * Math.PI * 52}
-                      strokeDashoffset={2 * Math.PI * 52 * (1 - (displayScore ?? 0) / 100)}
-                      transform="rotate(-90 60 60)"
-                    />
-                  </Svg>
-                  <View style={{ position: "absolute", alignItems: "center" }}>
-                    <Text style={{ ...TYPOGRAPHY["2xl"], fontWeight: "700", color: colors.text }}>
-                      {displayScore ?? "--"}
-                    </Text>
-                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>out of 100</Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Health Status */}
-              <View style={{ marginTop: SPACING.lg }}>
-                <View style={{ marginBottom: SPACING.sm }}>
-                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-                    <Text style={{ ...TYPOGRAPHY.base, fontWeight: "600", color: colors.text }}>
-                      Health Status
-                    </Text>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.sm }}>
-                      {healthStatusMeta && (
-                        <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>
-                          {healthStatusMeta.source} · {timeAgo(healthStatusMeta.ts)} ago
-                        </Text>
-                      )}
-                      <TouchableOpacity
-                        onPress={() => {
-                          setActionSheetVariant("quick");
-                          setActionSheetTitle("Update health status");
-                          setActionSheetFooter("You can edit your health record later.");
-                          setActionSheetOptions([
-                            {
-                              label: "Upload PDF",
-                              icon: "cloud-upload-outline",
-                              iconColor: "#7C3AED",
-                              subtitle: "Auto-fill from receipt",
-                              onPress: () => {
-                                storage.setItem("@kasper_health_record_start_mode", "upload");
-                                setShowAddModal(true);
-                              },
-                            },
-                            {
-                              label: "Add manually",
-                              icon: "create-outline",
-                              iconColor: "#64748B",
-                              subtitle: "Enter details yourself",
-                              onPress: () => setShowManualStatusModal(true),
-                            },
-                          ]);
-                          setActionSheetVisible(true);
-                        }}
-                        style={{
-                          paddingVertical: 6,
-                          paddingHorizontal: 12,
-                          borderRadius: RADIUS.pill,
-                          backgroundColor: colors.bgSecondary,
-                          borderWidth: 1,
-                          borderColor: colors.borderLight,
-                        }}
-                      >
-                        <Text style={{ ...TYPOGRAPHY.xs, color: colors.text, fontWeight: "600" }}>Update</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                </View>
-                <View style={{ gap: SPACING.sm }}>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Weight</Text>
-                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                      {latestWeightEntry?.weight ?? getStatusValue(latestExtractedStatus, "weight")}{" "}
-                      {latestWeightEntry ? "lb" : getStatusUnit(latestExtractedStatus, "weight")}
-                    </Text>
-                  </View>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Heart Rate</Text>
-                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                      {getStatusValue(latestExtractedStatus, "heartRate")}
-                    </Text>
-                  </View>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Respiratory Rate</Text>
-                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                      {getStatusValue(latestExtractedStatus, "respiratoryRate")}
-                    </Text>
-                  </View>
-                  <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Attitude</Text>
-                    <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                      {getStatusValue(latestExtractedStatus, "attitude")}
-                    </Text>
-                  </View>
-                </View>
+        {/* Health hub – single card: hero + metrics grid + actions */}
+        <View style={{ paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
+          <View style={{
+            borderRadius: RADIUS.xxl,
+            overflow: "hidden",
+            backgroundColor: colors.card,
+            borderWidth: 1,
+            borderColor: colors.borderLight,
+            ...SHADOWS.sm,
+          }}>
+            {/* Hero: latest visit with gradient */}
+            <LinearGradient
+              colors={[colors.accent + "14", colors.accent + "06", "transparent"]}
+              style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.xl, paddingBottom: SPACING.lg }}
+            >
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: SPACING.sm }}>
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 1 }}>
+                  Latest visit
+                </Text>
                 <TouchableOpacity
-                  onPress={() => setShowScoreBreakdown(true)}
-                  style={{
-                    marginTop: SPACING.md,
-                    paddingVertical: SPACING.sm,
-                    alignItems: "center",
-                    borderRadius: RADIUS.md,
-                    backgroundColor: colors.bgSecondary,
-                    borderWidth: 1,
-                    borderColor: colors.borderLight,
+                  onPress={() => {
+                    setActionSheetVariant("quick");
+                    setActionSheetTitle("Update health status");
+                    setActionSheetFooter("You can edit your health record later.");
+                    setActionSheetOptions([
+                      { label: "Upload PDF", icon: "cloud-upload-outline", iconColor: "#7C3AED", subtitle: "Auto-fill from clinical report", onPress: () => { storage.setItem("@kasper_health_record_start_mode", "upload"); setShowAddModal(true); } },
+                      { label: "Add manually", icon: "create-outline", iconColor: "#64748B", subtitle: "Enter details yourself", onPress: () => setShowManualStatusModal(true) },
+                    ]);
+                    setActionSheetVisible(true);
                   }}
+                  style={{ paddingVertical: 6, paddingHorizontal: 12, borderRadius: RADIUS.pill, backgroundColor: colors.surface }}
                 >
-                  <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>Score Breakdown</Text>
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.text, fontWeight: "600" }}>Update</Text>
                 </TouchableOpacity>
               </View>
-
-            </View>
-          </Card>
-        </View>
-
-        <View style={{ paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
-          <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.sm }}>
-            Adjust the inputs to see how routine care impacts {petNamePossessive} wellness.
-          </Text>
-          <TouchableOpacity
-            onPress={() => {
-              setPreventive({ vaccinesUpToDate: true, parasiteControlCurrent: true });
-              setMedical({ chronicConditionsCount: 1, medicationCompliance: 80, recentSymptomsLogged: 1 });
-            }}
-            activeOpacity={0.85}
-            style={{
-              width: "100%",
-              backgroundColor: colors.cardSecondary,
-              borderWidth: 1,
-              borderColor: colors.borderLight,
-              borderRadius: RADIUS.xl,
-              paddingVertical: SPACING.md,
-              paddingHorizontal: SPACING.lg,
-              ...SHADOWS.sm,
-            }}
-          >
-            <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-              <View style={{ flexDirection: "row", alignItems: "center" }}>
-                <View
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: 17,
-                    backgroundColor: colors.accent + "20",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    marginRight: SPACING.sm,
-                  }}
-                >
-                  <Ionicons name="refresh" size={18} color={colors.accent} />
-                </View>
-                <View>
-                  <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>
-                    Reset wellness inputs
+              {latestVisitRecord && (latestVisitDetails.clinicName || latestVisitDetails.doctorName || latestVisitDetails.visitDate) ? (
+                <>
+                  <Text style={{ ...TYPOGRAPHY.xl, fontWeight: "700", color: colors.text, letterSpacing: -0.3 }}>
+                    {latestVisitDetails.clinicName || "Visit"}
                   </Text>
-                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
-                    Restore default values
+                  <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: 4 }}>
+                    {[latestVisitDetails.doctorName, latestVisitDetails.visitDate && formatShortDate(latestVisitDetails.visitDate)].filter(Boolean).join(" · ")}
                   </Text>
-                </View>
+                </>
+              ) : (
+                <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "600", color: colors.text }}>No visit recorded yet</Text>
+              )}
+
+              {/* Health metrics – 2x2 grid pills */}
+              <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: SPACING.lg, gap: SPACING.sm }}>
+                {[
+                  { label: "Weight", value: `${latestWeightEntry?.weight ?? getStatusValue(latestExtractedStatus, "weight")} ${latestWeightEntry ? "lb" : getStatusUnit(latestExtractedStatus, "weight") || ""}`.trim() },
+                  { label: "Heart rate", value: getStatusValue(latestExtractedStatus, "heartRate") },
+                  { label: "Resp. rate", value: getStatusValue(latestExtractedStatus, "respiratoryRate") },
+                  { label: "Attitude", value: getStatusValue(latestExtractedStatus, "attitude") },
+                ].map(({ label, value }) => (
+                  <View key={label} style={{ flex: 1, minWidth: "45%", backgroundColor: colors.surface, borderRadius: RADIUS.lg, paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md }}>
+                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>{label}</Text>
+                    <Text style={{ ...TYPOGRAPHY.base, fontWeight: "600", color: colors.text }} numberOfLines={1}>{value || "—"}</Text>
+                  </View>
+                ))}
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-            </View>
-          </TouchableOpacity>
-        </View>
+              {healthStatusMeta && (
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: SPACING.sm }}>
+                  Last recorded {timeAgo(healthStatusMeta.ts)} ago
+                </Text>
+              )}
+            </LinearGradient>
 
-        <View style={{ paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
-          <Button title="Schedule Vet Visit" onPress={() => setShowVetVisitModal(true)} />
-          {nextAppointment && (
-            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.sm }}>
-              Next visit:{" "}
-              {new Date(nextAppointment.appointmentDate).toLocaleDateString("en-US", {
-                month: "short",
-                day: "numeric",
-              })}
-              {nextAppointment.appointmentTime ? ` • ${nextAppointment.appointmentTime}` : ""}
-              {nextAppointment.clinicName ? ` • ${nextAppointment.clinicName}` : ""}
-            </Text>
-          )}
+            {/* View Clinical Report – primary CTA */}
+            {latestVisitRecord?.pdfs?.length ? (
+              <TouchableOpacity
+                onPress={() => { const pdf = latestVisitRecord.pdfs?.[0]; if (pdf) handleViewPDF(pdf); }}
+                activeOpacity={0.8}
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingVertical: SPACING.lg,
+                  paddingHorizontal: SPACING.lg,
+                  borderTopWidth: 1,
+                  borderTopColor: colors.borderLight,
+                  borderLeftWidth: 4,
+                  borderLeftColor: colors.accent,
+                }}
+              >
+                <View style={{ width: 44, height: 44, borderRadius: RADIUS.lg, backgroundColor: colors.accent + "18", alignItems: "center", justifyContent: "center", marginRight: SPACING.md }}>
+                  <Ionicons name="document-text-outline" size={22} color={colors.accent} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>View Clinical Report</Text>
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>Latest visit PDF</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            ) : null}
+
+            {/* Schedule Vet Visit */}
+            <TouchableOpacity
+              onPress={() => navigateTo("ScheduleVetVisit")}
+              activeOpacity={0.8}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                paddingVertical: SPACING.lg,
+                paddingHorizontal: SPACING.lg,
+                borderTopWidth: 1,
+                borderTopColor: colors.borderLight,
+              }}
+            >
+              <View style={{ width: 44, height: 44, borderRadius: RADIUS.lg, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", marginRight: SPACING.md }}>
+                <Ionicons name="calendar-outline" size={22} color={colors.text} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ ...TYPOGRAPHY.base, fontWeight: "600", color: colors.text }}>Schedule Vet Visit</Text>
+                {nextAppointment ? (
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
+                    {nextAppointment.status === "confirmed" ? "Confirmed · " : ""}Next: {formatShortDate(nextAppointment.appointmentDate)}
+                  </Text>
+                ) : (
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>Book an appointment</Text>
+                )}
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+            </TouchableOpacity>
+
+            {/* Vaccination Status */}
+            <TouchableOpacity
+              onPress={() => navigateTo("VaccinationStatus")}
+              activeOpacity={0.8}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                paddingVertical: SPACING.lg,
+                paddingHorizontal: SPACING.lg,
+                borderTopWidth: 1,
+                borderTopColor: colors.borderLight,
+              }}
+            >
+              <View style={{ width: 44, height: 44, borderRadius: RADIUS.lg, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", marginRight: SPACING.md }}>
+                <Ionicons name="medical-outline" size={22} color={colors.text} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ ...TYPOGRAPHY.base, fontWeight: "600", color: colors.text }}>Vaccination Status</Text>
+                {nextVaccinationDue ? (
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }} numberOfLines={1}>
+                    Next due: {nextVaccinationDue.name} — {formatShortDate(nextVaccinationDue.dueDate)}
+                  </Text>
+                ) : (
+                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>View vaccines & due dates</Text>
+                )}
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={colors.textMuted} />
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* Health History */}
-        <View style={{ 
-          paddingHorizontal: SPACING.lg,
-          marginBottom: SPACING.lg
-        }}>
-          <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "600", marginBottom: SPACING.md, color: colors.text }}>
+        <View style={{ paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
+          <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 1, marginBottom: SPACING.md }}>
             Health History
           </Text>
           
@@ -3220,6 +2650,7 @@ export default function HealthScreen() {
 
       <AddHealthRecordModal
         visible={showAddModal}
+        petName={petName}
         onClose={() => setShowAddModal(false)}
         onSave={handleSaveRecord}
         startMode={healthRecordStartMode}
@@ -3229,6 +2660,7 @@ export default function HealthScreen() {
 
       <AddHealthRecordModal
         visible={showEditModal}
+        petName={petName}
         onClose={() => {
           setShowEditModal(false);
           setEditingRecord(null);
@@ -3260,218 +2692,6 @@ export default function HealthScreen() {
         }}
         onSave={handleSaveManualStatus}
         initialValues={manualStatusPrefill || manualStatus || undefined}
-      />
-
-      <Modal visible={showScoreBreakdown} transparent animationType="slide">
-        <View style={{ flex: 1, backgroundColor: colors.black + "80", justifyContent: "flex-end" }}>
-          <View style={{
-            backgroundColor: colors.card,
-            borderTopLeftRadius: RADIUS.xl,
-            borderTopRightRadius: RADIUS.xl,
-            paddingTop: SPACING.lg,
-            paddingHorizontal: SPACING.lg,
-            paddingBottom: SPACING.xl,
-            maxHeight: "90%"
-          }}>
-            <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING.lg }}>
-              <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
-                Score Breakdown
-              </Text>
-              <TouchableOpacity onPress={() => setShowScoreBreakdown(false)}>
-                <Ionicons name="close" size={24} color={colors.textMuted} />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  borderBottomWidth: 1,
-                  borderBottomColor: colors.borderLight,
-                  paddingHorizontal: SPACING.xs,
-                  gap: SPACING.sm
-                }}
-              >
-                {wellnessTabs.map((tab) => {
-                  const isActive = activeWellnessTab === tab.key;
-                  return (
-                    <TouchableOpacity
-                      key={tab.key}
-                      onPress={() => setActiveWellnessTab(tab.key)}
-                      style={{
-                        paddingVertical: SPACING.sm,
-                        paddingHorizontal: SPACING.sm,
-                        alignItems: "center",
-                        flexShrink: 0
-                      }}
-                    >
-                      <View style={{ alignItems: "center" }}>
-                        <Text
-                          style={{
-                            ...TYPOGRAPHY.sm,
-                            fontWeight: isActive ? "700" : "600",
-                            color: isActive ? colors.accent : colors.textMuted
-                          }}
-                        >
-                          {tab.label}
-                        </Text>
-                        <View
-                          style={{
-                            height: 3,
-                            alignSelf: "stretch",
-                            backgroundColor: isActive ? colors.accent : "transparent",
-                            marginTop: SPACING.xs,
-                            borderRadius: RADIUS.pill
-                          }}
-                        />
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-
-              <View style={{ paddingTop: SPACING.lg }}>
-                {activeWellnessTab === "preventive" && (
-                  <View>
-                    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.sm }}>
-                      <Ionicons name="medical" size={18} color={colors.accent} style={{ marginRight: SPACING.xs }} />
-                      <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text }}>
-                        Preventive Care · <Text style={{ color: colors.textMuted }}>Score {preventiveScore}/50</Text>
-                      </Text>
-                    </View>
-                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.sm }}>
-                      Tracks routine prevention. Vaccines and parasite control each add points toward the total.
-                    </Text>
-                    <ProgressBar value={preventiveScore} max={50} />
-                    <View style={{ marginTop: SPACING.sm }}>
-                      <ToggleRow
-                        label="Vaccines up-to-date"
-                        value={preventive.vaccinesUpToDate}
-                        onChange={(v) => {
-                          markWellnessUserChanged();
-                          setPreventive(prev => ({ ...prev, vaccinesUpToDate: v }));
-                        }}
-                      />
-                      <ToggleRow
-                        label="Parasite control current"
-                        value={preventive.parasiteControlCurrent}
-                        onChange={(v) => {
-                          markWellnessUserChanged();
-                          setPreventive(prev => ({ ...prev, parasiteControlCurrent: v }));
-                        }}
-                      />
-                    </View>
-                  </View>
-                )}
-
-                {activeWellnessTab === "medical" && (
-                  <View>
-                    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.sm }}>
-                      <Ionicons name="bandage" size={18} color={colors.accent} style={{ marginRight: SPACING.xs }} />
-                      <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text }}>
-                        Medical History · <Text style={{ color: colors.textMuted }}>Score {medicalScore}/30</Text>
-                      </Text>
-                    </View>
-                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.sm }}>
-                      Fewer chronic conditions and higher medication compliance increase this score.
-                    </Text>
-                    <ProgressBar value={medicalScore} max={30} />
-                    <View style={{ marginTop: SPACING.sm }}>
-                      <NumberAdjustRow
-                        label="Chronic conditions"
-                        value={medical.chronicConditionsCount}
-                        min={0}
-                        max={5}
-                        onChange={(v) => {
-                          markWellnessUserChanged();
-                          setMedical(prev => ({ ...prev, chronicConditionsCount: v }));
-                        }}
-                      />
-                      <NumberAdjustRow
-                        label="Medication compliance"
-                        value={medical.medicationCompliance}
-                        min={0}
-                        max={100}
-                        step={5}
-                        suffix="%"
-                        onChange={(v) => {
-                          markWellnessUserChanged();
-                          setMedical(prev => ({ ...prev, medicationCompliance: v }));
-                        }}
-                      />
-                      <NumberAdjustRow
-                        label="Symptoms logged (30d)"
-                        value={medical.recentSymptomsLogged}
-                        min={0}
-                        max={10}
-                        onChange={(v) => {
-                          markWellnessUserChanged();
-                          setMedical(prev => ({ ...prev, recentSymptomsLogged: v }));
-                        }}
-                      />
-                    </View>
-                  </View>
-                )}
-
-                {activeWellnessTab === "weight" && (
-                  <View>
-                    <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.sm }}>
-                      <Ionicons name="barbell" size={18} color={colors.accent} style={{ marginRight: SPACING.xs }} />
-                      <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text }}>
-                        Weight & Check-ins · <Text style={{ color: colors.textMuted }}>Score {weightScore}/20</Text>
-                      </Text>
-                    </View>
-                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginBottom: SPACING.sm }}>
-                      Recent weight logs and smaller changes score higher. Longer gaps or big swings lower it.
-                    </Text>
-                    <ProgressBar value={weightScore} max={20} />
-                    <View style={{ marginTop: SPACING.sm, gap: SPACING.sm }}>
-                      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Last weight log</Text>
-                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                          {weightMetrics.hasHistory && weightMetrics.lastDate
-                            ? `${new Date(weightMetrics.lastDate).toLocaleDateString()}`
-                            : "N/A"}
-                        </Text>
-                      </View>
-                      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Days since last</Text>
-                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                          {weightMetrics.hasHistory ? `${weightMetrics.lastRecordedDaysAgo} d` : "N/A"}
-                        </Text>
-                      </View>
-                      <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
-                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>Change vs baseline</Text>
-                        <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-                          {weightMetrics.hasHistory && weightMetrics.hasBaseline
-                            ? `${Math.round(weightMetrics.percentChange)}%`
-                            : "N/A"}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                )}
-              </View>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      <ScheduleVetVisitModal
-        visible={showVetVisitModal}
-        onClose={() => setShowVetVisitModal(false)}
-        initialValues={summaryPrefill || undefined}
-        onPrefillApplied={() => setSummaryPrefill(null)}
-        onSave={(appointment) => {
-          if (!user?.id || !activePetId) return;
-          const next = [...appointments, appointment];
-          setAppointments(next);
-          const key = `@kasper_vet_appointments_${user.id}_${activePetId}`;
-          storage.setItem(key, JSON.stringify(next)).catch(() => {});
-        }}
       />
 
       {selectedAttachment && (

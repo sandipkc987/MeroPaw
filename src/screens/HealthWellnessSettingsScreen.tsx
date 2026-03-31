@@ -1,23 +1,49 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { View, Text, ScrollView, Pressable, StyleSheet, Alert } from "react-native";
+import { View, Text, ScrollView, Pressable, StyleSheet, Alert, Platform } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Card, Row, Divider, SectionTitle, Toggle } from "@src/components/UI";
-import Select from "@src/components/Select";
 import Stepper from "@src/components/Stepper";
-import type { Option } from "@src/components/Select";
 import { SPACING, TYPOGRAPHY } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import ScreenHeader from "@src/components/ScreenHeader";
 import { useNavigation } from "@src/contexts/NavigationContext";
 import { useAuth } from "@src/contexts/AuthContext";
 import { usePets } from "@src/contexts/PetContext";
-import { insertNotification } from "@src/services/supabaseData";
+import { insertNotification, fetchVetAppointments, updateVetAppointment } from "@src/services/supabaseData";
+import {
+  isCalendarSyncAvailable,
+  requestCalendarPermission,
+  getCalendarId,
+  createVetCalendarEvent,
+} from "@src/services/calendarSync";
 
 const SETTINGS_KEY = "@kasper_settings";
-const WELLNESS_OPTIONS: Option[] = [
-  { label: "Weekly", value: "weekly" },
-  { label: "Monthly", value: "monthly" },
-];
+
+function toCalendarAppointment(apt: {
+  title?: string;
+  appointmentDate: string;
+  appointmentTime?: string;
+  clinicName?: string;
+  addressLine1?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  reason?: string;
+  notes?: string;
+}) {
+  return {
+    title: apt.title ?? null,
+    appointment_date: apt.appointmentDate,
+    appointment_time: apt.appointmentTime ?? null,
+    clinic_name: apt.clinicName ?? null,
+    address_line1: apt.addressLine1 ?? null,
+    city: apt.city ?? null,
+    state: apt.state ?? null,
+    zip: apt.zip ?? null,
+    reason: apt.reason ?? null,
+    notes: apt.notes ?? null,
+  };
+}
 
 function clamp(n: number, min = 1, max = 15) {
   return Math.max(min, Math.min(max, n));
@@ -31,15 +57,11 @@ export default function HealthWellnessSettingsScreen() {
   const activePet = getActivePet();
   const [weightAlert, setWeightAlert] = useState(true);
   const [weightThreshold, setWeightThreshold] = useState(5);
-  const [wellnessUpdates, setWellnessUpdates] = useState(true);
-  const [wellnessCadence, setWellnessCadence] = useState("weekly");
   const [vetSync, setVetSync] = useState(false);
   const initializedRef = useRef(false);
   const prevRef = useRef({
     weightAlert,
     weightThreshold,
-    wellnessUpdates,
-    wellnessCadence,
     vetSync,
   });
 
@@ -50,8 +72,6 @@ export default function HealthWellnessSettingsScreen() {
         const settings = JSON.parse(stored);
         if (settings.weightAlert !== undefined) setWeightAlert(settings.weightAlert);
         if (settings.weightThreshold !== undefined) setWeightThreshold(settings.weightThreshold);
-        if (settings.wellnessUpdates !== undefined) setWellnessUpdates(settings.wellnessUpdates);
-        if (settings.wellnessCadence !== undefined) setWellnessCadence(settings.wellnessCadence);
         if (settings.vetSync !== undefined) setVetSync(settings.vetSync);
       }
     } catch (error) {
@@ -65,14 +85,12 @@ export default function HealthWellnessSettingsScreen() {
       const settings = stored ? JSON.parse(stored) : {};
       settings.weightAlert = weightAlert;
       settings.weightThreshold = weightThreshold;
-      settings.wellnessUpdates = wellnessUpdates;
-      settings.wellnessCadence = wellnessCadence;
       settings.vetSync = vetSync;
       await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
     } catch (error) {
       console.error("Failed to save settings:", error);
     }
-  }, [weightAlert, weightThreshold, wellnessUpdates, wellnessCadence, vetSync]);
+  }, [weightAlert, weightThreshold, vetSync]);
 
   useEffect(() => {
     loadSettings();
@@ -92,8 +110,6 @@ export default function HealthWellnessSettingsScreen() {
       prevRef.current = {
         weightAlert,
         weightThreshold,
-        wellnessUpdates,
-        wellnessCadence,
         vetSync,
       };
       return;
@@ -117,14 +133,6 @@ export default function HealthWellnessSettingsScreen() {
         message: `Threshold set to ±${weightThreshold}%.`,
       }).catch(() => {});
     }
-    if (wellnessUpdates && !prev.wellnessUpdates) {
-      insertNotification(user.id, {
-        petId,
-        kind: "health",
-        title: "Wellness updates enabled",
-        message: "You'll receive wellness summaries.",
-      }).catch(() => {});
-    }
     if (vetSync && !prev.vetSync) {
       insertNotification(user.id, {
         petId,
@@ -137,15 +145,67 @@ export default function HealthWellnessSettingsScreen() {
     prevRef.current = {
       weightAlert,
       weightThreshold,
-      wellnessUpdates,
-      wellnessCadence,
       vetSync,
     };
-  }, [weightAlert, weightThreshold, wellnessUpdates, wellnessCadence, vetSync, user?.id, activePet?.id]);
+  }, [weightAlert, weightThreshold, vetSync, user?.id, activePet?.id]);
 
-  function handleConnectCalendar() {
-    setVetSync(true);
-    Alert.alert("Vet Sync", "Mock: Connected to your device calendar for vet appointments.");
+  const [connectingCalendar, setConnectingCalendar] = useState(false);
+
+  async function handleConnectCalendar() {
+    if (Platform.OS === "web") {
+      window.alert("Coming soon\n\nCalendar sync is not available on web.");
+      return;
+    }
+    const notAvailable = "Calendar sync is not available on this device.";
+    const available = await isCalendarSyncAvailable();
+    if (!available) {
+      Alert.alert("Not available", notAvailable);
+      return;
+    }
+    setConnectingCalendar(true);
+    try {
+      const granted = await requestCalendarPermission();
+      if (!granted) {
+        Alert.alert(
+          "Permission needed",
+          "Meropaw needs calendar access to add your vet appointments. You can enable it in Settings."
+        );
+        setConnectingCalendar(false);
+        return;
+      }
+      const calendarId = await getCalendarId();
+      if (!calendarId) {
+        Alert.alert("Error", "Could not find a calendar to use. Please check your device settings.");
+        setConnectingCalendar(false);
+        return;
+      }
+      setVetSync(true);
+      const stored = await AsyncStorage.getItem(SETTINGS_KEY);
+      const settings = stored ? JSON.parse(stored) : {};
+      settings.vetSync = true;
+      await AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+
+      if (user?.id && activePet?.id) {
+        const appointments = await fetchVetAppointments(user.id, activePet.id);
+        for (const apt of appointments) {
+          if (apt.status === "canceled") continue;
+          if (apt.calendarEventId) continue;
+          const eventId = await createVetCalendarEvent(calendarId, toCalendarAppointment(apt));
+          if (eventId) {
+            await updateVetAppointment(user.id, apt.id, { calendar_event_id: eventId });
+          }
+        }
+      }
+
+      const success = "Calendar connected. Your vet appointments will appear in your calendar.";
+      if (Platform.OS === "web") window.alert(success);
+      else Alert.alert("Connected", success);
+    } catch (e) {
+      console.error("Connect calendar error:", e);
+      Alert.alert("Error", "Something went wrong. Please try again.");
+    } finally {
+      setConnectingCalendar(false);
+    }
   }
 
   function onThresholdChange(v: number) {
@@ -189,27 +249,6 @@ export default function HealthWellnessSettingsScreen() {
           </View>
           <Divider />
           <Row
-            icon="pulse-outline"
-            label="Wellness Score Updates"
-            hint={wellnessUpdates ? `Delivery: ${wellnessCadence === "weekly" ? "Weekly" : "Monthly"}` : "Disabled"}
-            control={
-              <Toggle
-                value={wellnessUpdates}
-                onValueChange={setWellnessUpdates}
-              />
-            }
-          />
-          <View style={styles.inlineBetween}>
-            <Text style={[styles.inlineLabel, { color: colors.textMuted }]}>Cadence</Text>
-            <Select
-              value={wellnessCadence}
-              onChange={setWellnessCadence}
-              options={WELLNESS_OPTIONS}
-              width={180}
-            />
-          </View>
-          <Divider />
-          <Row
             icon="calendar-outline"
             label="Vet Appointment Sync"
             hint={vetSync ? "Connected to Calendar" : "Sync your device calendar for upcoming vet visits"}
@@ -221,8 +260,14 @@ export default function HealthWellnessSettingsScreen() {
             }
           />
           <View style={{ alignItems: "flex-end", marginTop: SPACING.sm }}>
-            <Pressable onPress={handleConnectCalendar} style={[styles.secondaryBtn, { backgroundColor: colors.surface, borderColor: colors.borderLight }]}>
-              <Text style={[styles.secondaryBtnText, { color: colors.text }]}>Connect Calendar</Text>
+            <Pressable
+            onPress={handleConnectCalendar}
+            disabled={connectingCalendar}
+            style={[styles.secondaryBtn, { backgroundColor: colors.surface, borderColor: colors.borderLight, opacity: connectingCalendar ? 0.7 : 1 }]}
+          >
+              <Text style={[styles.secondaryBtnText, { color: colors.text }]}>
+                {connectingCalendar ? "Connecting…" : "Connect Calendar"}
+              </Text>
             </Pressable>
           </View>
         </Card>

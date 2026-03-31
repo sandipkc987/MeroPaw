@@ -1,8 +1,11 @@
+import "react-native-gesture-handler";
 import React, { useState, useEffect, useRef } from "react";
 import { SafeAreaView, StatusBar, View, ActivityIndicator, Text, TouchableOpacity } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AuthProvider, useAuth } from "@src/contexts/AuthContext";
 import { NavigationProvider, useNavigation } from "@src/contexts/NavigationContext";
+import { DiscoverFeedProvider } from "@src/contexts/DiscoverFeedContext";
 import { MemoriesProvider } from "@src/contexts/MemoriesContext";
 import { ProfileProvider } from "@src/contexts/ProfileContext";
 import { PetProvider, usePets } from "@src/contexts/PetContext";
@@ -14,6 +17,10 @@ import MemoriesScreen from "@src/screens/MemoriesScreen";
 import RemindersScreen from "@src/screens/RemindersScreen";
 import ExpensesScreen from "@src/screens/ExpensesScreen";
 import HealthScreen from "@src/screens/HealthScreen";
+import ScheduleVetVisitScreen from "@src/screens/ScheduleVetVisitScreen";
+import VetVisitHistoryScreen from "@src/screens/VetVisitHistoryScreen";
+import InAppBrowserScreen from "@src/screens/InAppBrowserScreen";
+import VaccinationStatusScreen from "@src/screens/VaccinationStatusScreen";
 import ProfileScreen from "@src/screens/ProfileScreen";
 import ShopScreen from "@src/screens/ShopScreen";
 import AlertsScreen from "@src/screens/AlertsScreen";
@@ -26,8 +33,11 @@ import AppearancePreferencesScreen from "@src/screens/AppearancePreferencesScree
 import DataAccountScreen from "@src/screens/DataAccountScreen";
 import SupportScreen from "@src/screens/SupportScreen";
 import AddPetScreen from "@src/screens/AddPetScreen";
+import CurrentPetProfileSettingsScreen from "@src/screens/CurrentPetProfileSettingsScreen";
 import FeedbackScreen from "@src/screens/FeedbackScreen";
 import ReceiptsScreen from "@src/screens/ReceiptsScreen";
+import DiscoverScreen from "@src/screens/DiscoverScreen";
+import DiscoverSettingsScreen from "@src/screens/DiscoverSettingsScreen";
 import Navigation from "@src/components/Navigation";
 import AddModal from "@src/components/AddModal";
 import { fetchExpenses, hasMonthlyExpenseSummary, insertNotification } from "@src/services/supabaseData";
@@ -71,7 +81,7 @@ function AppContent() {
   const auth = useAuth();
   const { isAuthenticated, isLoading, isBootstrapping, hasCompletedOnboarding, user, needsEmailVerification } = auth;
   const { activeScreen, setActiveScreen, triggerAddReminder, navHidden, activeTab, setActiveTab } = useNavigation();
-  const { getActivePet } = usePets();
+  const { getActivePet, isLoading: petsLoading } = usePets();
   const activePet = getActivePet();
   const [showAddModal, setShowAddModal] = useState(false);
   const fontsLoaded = useInstagramSansFonts();
@@ -176,12 +186,19 @@ function AppContent() {
     if (activeScreen === "DataAccount") return <DataAccountScreen />;
     if (activeScreen === "Support") return <SupportScreen />;
     if (activeScreen === "AddPet") return <AddPetScreen />;
+    if (activeScreen === "CurrentPetProfileSettings") return <CurrentPetProfileSettingsScreen />;
     if (activeScreen === "Feedback") return <FeedbackScreen />;
     if (activeScreen === "Receipts") return <ReceiptsScreen />;
+    if (activeScreen === "Discover") return <DiscoverScreen />;
+    if (activeScreen === "DiscoverSettings") return <DiscoverSettingsScreen />;
     if (activeScreen === "Memories") return <MemoriesScreen />;
     if (activeScreen === "Reminders") return <RemindersScreen />;
     if (activeScreen === "Profile") return <ProfileScreen />;
     if (activeScreen === "Health") return <HealthScreen />;
+    if (activeScreen === "ScheduleVetVisit") return <ScheduleVetVisitScreen />;
+    if (activeScreen === "VetVisitHistory") return <VetVisitHistoryScreen />;
+    if (activeScreen === "InAppBrowser") return <InAppBrowserScreen />;
+    if (activeScreen === "VaccinationStatus") return <VaccinationStatusScreen />;
     if (activeScreen === "Expenses") return <ExpensesScreen />;
 
     // Handle main tab screens
@@ -199,12 +216,21 @@ function AppContent() {
 
   const showNavigation = !activeScreen && !navHidden;
 
+  const showHomeLoader = !activeScreen && activeTab === "home" && petsLoading;
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
       <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
       <SafeAreaView style={{ flex: 1 }}>
-        {renderScreen()}
-        {showNavigation && (
+        {showHomeLoader ? (
+          <View style={{ flex: 1, justifyContent: "center", alignItems: "center", backgroundColor: colors.bg }}>
+            <ActivityIndicator size="large" color={colors.accent} />
+            <Text style={{ marginTop: 12, fontSize: 15, color: colors.textMuted }}>Loading...</Text>
+          </View>
+        ) : (
+          renderScreen()
+        )}
+        {showNavigation && !showHomeLoader && (
           <>
             <Navigation
               activeTab={activeTab}
@@ -231,6 +257,7 @@ function AppContent() {
 export default function App() {
   return (
     <ErrorBoundary>
+      <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
       <AuthProvider>
         <ThemeProvider>
@@ -238,7 +265,9 @@ export default function App() {
             <MemoriesProvider>
               <ProfileProvider>
                 <NavigationProvider>
-                  <AppContent />
+                  <DiscoverFeedProvider>
+                    <AppContent />
+                  </DiscoverFeedProvider>
                 </NavigationProvider>
               </ProfileProvider>
             </MemoriesProvider>
@@ -246,6 +275,7 @@ export default function App() {
         </ThemeProvider>
       </AuthProvider>
       </SafeAreaProvider>
+      </GestureHandlerRootView>
     </ErrorBoundary>
   );
 }

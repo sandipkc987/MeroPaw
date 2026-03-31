@@ -7,18 +7,34 @@ import ScreenHeader from "@src/components/ScreenHeader";
 
 interface LoginScreenProps {
   onLogin: (email: string, password: string) => Promise<void>;
+  onGoogleSignIn: () => Promise<void>;
   onSignup: () => void;
   onForgotPassword: () => void;
   onBack: () => void;
 }
 
-export default function LoginScreen({ onLogin, onSignup, onForgotPassword, onBack }: LoginScreenProps) {
+export default function LoginScreen({ onLogin, onGoogleSignIn, onSignup, onForgotPassword, onBack }: LoginScreenProps) {
   const { colors } = useTheme();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+
+  const handleGoogleSignIn = async () => {
+    setGoogleLoading(true);
+    setErrorMessage("");
+    try {
+      await onGoogleSignIn();
+    } catch (error) {
+      console.error("Google sign-in error:", error);
+      const message = error instanceof Error ? error.message : "Failed to sign in with Google.";
+      setErrorMessage(message);
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
 
   const validateEmail = (emailAddress: string): boolean => {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -57,7 +73,7 @@ export default function LoginScreen({ onLogin, onSignup, onForgotPassword, onBac
       backgroundColor: colors.bg,
       paddingHorizontal: SPACING.xl,
     }}>
-      <ScreenHeader title="Welcome Back" onBackPress={onBack} />
+      <ScreenHeader title="Welcome Back" onBackPress={onBack} useSafeArea={true} />
 
       {/* Logo */}
       <View style={{
@@ -151,10 +167,55 @@ export default function LoginScreen({ onLogin, onSignup, onForgotPassword, onBac
       <Button
         title={loading ? "Signing In..." : "Sign In"}
         onPress={handleLogin}
-        disabled={loading}
+        disabled={loading || googleLoading}
         size="lg"
-        style={{ marginBottom: SPACING.xl }}
+        style={{ marginBottom: SPACING.lg }}
       />
+
+      {/* Divider */}
+      <View style={{
+        flexDirection: "row",
+        alignItems: "center",
+        marginBottom: SPACING.lg,
+      }}>
+        <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
+        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginHorizontal: SPACING.md }}>
+          or
+        </Text>
+        <View style={{ flex: 1, height: 1, backgroundColor: colors.border }} />
+      </View>
+
+      {/* Google Sign In Button */}
+      <TouchableOpacity
+        onPress={handleGoogleSignIn}
+        disabled={loading || googleLoading}
+        style={{
+          flexDirection: "row",
+          alignItems: "center",
+          justifyContent: "center",
+          backgroundColor: colors.cardBg,
+          borderWidth: 1,
+          borderColor: colors.border,
+          borderRadius: RADIUS.lg,
+          paddingVertical: SPACING.md,
+          paddingHorizontal: SPACING.xl,
+          marginBottom: SPACING.xl,
+          opacity: (loading || googleLoading) ? 0.6 : 1,
+          ...SHADOWS.sm,
+        }}
+      >
+        <Image
+          source={{ uri: "https://www.google.com/favicon.ico" }}
+          style={{ width: 20, height: 20, marginRight: SPACING.sm }}
+        />
+        <Text style={{
+          ...TYPOGRAPHY.base,
+          color: colors.text,
+          fontWeight: "600",
+        }}>
+          {googleLoading ? "Signing in..." : "Continue with Google"}
+        </Text>
+      </TouchableOpacity>
 
       {/* Sign Up Link */}
       <View style={{

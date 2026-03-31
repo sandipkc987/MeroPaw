@@ -1,5 +1,6 @@
 import React from "react";
 import { View, Text, TouchableOpacity, Image, Platform, StatusBar } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { SPACING, TYPOGRAPHY } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { Ionicons } from "@expo/vector-icons";
@@ -14,11 +15,18 @@ interface ScreenHeaderProps {
   onAvatarPress?: () => void;
   actionIcon?: keyof typeof Ionicons.glyphMap;
   onActionPress?: () => void;
+  /** Second action icon (e.g. Discover) - shown left of primary action */
+  extraActionIcon?: keyof typeof Ionicons.glyphMap;
+  onExtraActionPress?: () => void;
   variant?: "default" | "stacked";
   centerTitle?: boolean;
   titleStyle?: any;
   paddingTop?: number;
   paddingBottom?: number;
+  /** When true, the line under the header is inset (does not touch screen edges), like Home. */
+  insetSeparator?: boolean;
+  /** When true, uses safe area insets for top padding (for screens without SafeAreaView wrapper). Default: false */
+  useSafeArea?: boolean;
 }
 
 export default function ScreenHeader({
@@ -30,17 +38,26 @@ export default function ScreenHeader({
   onAvatarPress,
   actionIcon,
   onActionPress,
+  extraActionIcon,
+  onExtraActionPress,
   variant = "default",
   centerTitle = false,
   titleStyle,
   paddingTop,
   paddingBottom,
+  insetSeparator = false,
+  useSafeArea = false,
 }: ScreenHeaderProps) {
   const { colors } = useTheme();
   const { navigateTo, goBack, canGoBack } = useNavigation();
+  const insets = useSafeAreaInsets();
   const showAction = !!actionIcon && !!onActionPress;
+  const showExtraAction = !!extraActionIcon && !!onExtraActionPress;
   const showAvatar = !!avatarUri || !!avatarFallback;
-  const topInset = Platform.OS === "android" ? (StatusBar.currentHeight || 0) : 0;
+  // Only use safe area insets when explicitly requested (for screens without SafeAreaView wrapper)
+  const topInset = useSafeArea 
+    ? (insets.top > 0 ? insets.top : (Platform.OS === "android" ? (StatusBar.currentHeight || 0) : 0))
+    : (Platform.OS === "android" ? (StatusBar.currentHeight || 0) : 0);
   const isStacked = variant === "stacked";
   const hasTitle = !!title;
 
@@ -57,7 +74,7 @@ export default function ScreenHeader({
             ? paddingBottom
             : (isStacked && !hasTitle ? SPACING.xs : SPACING.md + 2),
         backgroundColor: colors.bg,
-        borderBottomWidth: isStacked ? 0 : 1,
+        borderBottomWidth: isStacked || insetSeparator ? 0 : 1,
         borderBottomColor: colors.borderLight
       }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
@@ -122,27 +139,44 @@ export default function ScreenHeader({
             ) : null}
           </View>
 
-          {showAction ? (
-            <TouchableOpacity
-              onPress={onActionPress}
-              style={{
-                alignItems: "center",
-                justifyContent: "center",
-                width: 36,
-                height: 36,
-                backgroundColor: colors.accent,
-                borderRadius: 18,
-              }}
-            >
-              <Ionicons name={actionIcon as any} size={18} color={colors.white} />
-            </TouchableOpacity>
-          ) : (
-            <View style={{ width: 36, height: 36 }} />
-          )}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: SPACING.xs }}>
+            {showExtraAction && (
+              <TouchableOpacity
+                onPress={onExtraActionPress}
+                style={{
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 36,
+                  height: 36,
+                  backgroundColor: colors.surface,
+                  borderRadius: 18,
+                }}
+              >
+                <Ionicons name={extraActionIcon as any} size={18} color={colors.text} />
+              </TouchableOpacity>
+            )}
+            {showAction ? (
+              <TouchableOpacity
+                onPress={onActionPress}
+                style={{
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 36,
+                  height: 36,
+                  backgroundColor: colors.accent,
+                  borderRadius: 18,
+                }}
+              >
+                <Ionicons name={actionIcon as any} size={18} color={colors.white} />
+              </TouchableOpacity>
+            ) : (
+              !showExtraAction && <View style={{ width: 36, height: 36 }} />
+            )}
+          </View>
         </View>
 
         {!isStacked && centerTitle ? (
-          <View style={{ position: "absolute", left: SPACING.lg, right: SPACING.lg, top: topInset + SPACING.md }}>
+          <View pointerEvents="none" style={{ position: "absolute", left: SPACING.lg, right: SPACING.lg, top: topInset + SPACING.md }}>
             <View style={{ height: 36, justifyContent: "center", alignItems: "center" }}>
               <Text style={[{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }, titleStyle]} numberOfLines={1}>
                 {title}
@@ -191,6 +225,14 @@ export default function ScreenHeader({
               </Text>
             ) : null}
           </>
+        ) : null}
+
+        {!isStacked && insetSeparator ? (
+          <View style={{
+            height: 1,
+            backgroundColor: colors.borderLight,
+            marginTop: SPACING.sm,
+          }} />
         ) : null}
       </View>
     </>

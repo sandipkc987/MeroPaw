@@ -1,5 +1,6 @@
-import React, { useMemo, useState, useEffect, useRef } from "react";
+import React, { useMemo, useState, useEffect, useRef, useCallback } from "react";
 import { View, Text, SectionList, TouchableOpacity, Modal, Alert, Platform, ScrollView, Linking } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 
 // Conditionally import DateTimePicker only for native platforms
 let DateTimePicker: any = null;
@@ -50,7 +51,7 @@ const AddReminderModal = ({ visible, onClose, onSave, onDelete, initialReminder 
   onDelete?: () => void;
   initialReminder?: ReminderItem | null;
 }) => {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
   const [title, setTitle] = useState("");
   const [note, setNote] = useState("");
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -727,6 +728,7 @@ const AddReminderModal = ({ visible, onClose, onSave, onDelete, initialReminder 
                         value={selectedDate}
                         mode="date"
                         display={Platform.OS === "ios" ? "spinner" : "default"}
+                        themeVariant={isDark ? "dark" : "light"}
                         onChange={(event: any, date?: Date) => {
                           if (Platform.OS === "android") {
                             setShowDatePicker(false);
@@ -777,6 +779,7 @@ const AddReminderModal = ({ visible, onClose, onSave, onDelete, initialReminder 
                         value={selectedTime}
                         mode="time"
                         display={Platform.OS === "ios" ? "spinner" : "default"}
+                        themeVariant={isDark ? "dark" : "light"}
                         is24Hour={false}
                         onChange={(event: any, date?: Date) => {
                           if (Platform.OS === "android") {
@@ -1058,201 +1061,142 @@ const ReminderCard = ({
     return due.getTime() < Date.now();
   })();
   const statusLabel = item.completed ? "Completed" : isOverdue ? "Overdue" : item.active ? "Active" : "Paused";
+  const metaLine = [timeLabel, dateLabel].filter(Boolean).join(" · ") + (item.repeating ? ` · ${item.repeating}` : "");
+
   return (
     <TouchableOpacity
       activeOpacity={0.95}
       onPress={onPress}
       style={{
-        backgroundColor: highlighted ? `${colors.accent}12` : colors.card,
-        borderRadius: 18,
-        padding: SPACING.md,
-        marginBottom: SPACING.md,
+        flexDirection: "column",
+        backgroundColor: highlighted ? `${colors.accent}10` : colors.card,
+        borderRadius: RADIUS.xl,
+        marginBottom: SPACING.sm,
         borderWidth: 1,
-        borderColor: highlighted ? colors.accent : colors.borderLight,
+        borderColor: highlighted ? colors.accent + "40" : colors.borderLight,
+        overflow: "hidden",
+        opacity: item.completed ? 0.7 : 1,
         ...SHADOWS.sm,
-        opacity: item.completed ? 0.55 : 1,
       }}
     >
-      <View style={{ flexDirection: "row", alignItems: "center" }}>
-        <View
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: 12,
-            alignItems: "center",
-            justifyContent: "center",
-            backgroundColor: `${c.tint}22`,
-            marginRight: SPACING.sm,
-          }}
-        >
-          <Ionicons name={c.iconName as any} size={20} color={c.tint} />
-        </View>
-
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: "row", alignItems: "center" }}>
-            <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "800", color: colors.text, marginRight: 6 }}>
-              {item.title}
-            </Text>
-            {item.hasNotification && (
-              <View style={{
-                backgroundColor: colors.bgSecondary,
-                borderRadius: 999,
-                paddingHorizontal: 6,
-                paddingVertical: 2,
-              }}>
-                <Ionicons name="notifications" size={12} color={colors.warning} />
+      <LinearGradient
+        colors={[colors.accent + "14", colors.accent + "06", "transparent"]}
+        style={{ height: 24, width: "100%" }}
+      />
+      <View style={{ flexDirection: "row", flex: 1 }}>
+      <View style={{ width: 4, backgroundColor: item.completed ? colors.success : isOverdue ? colors.warning : c.tint }} />
+      <View style={{ flex: 1, paddingVertical: SPACING.md, paddingHorizontal: SPACING.md }}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+          <View style={{ flexDirection: "row", alignItems: "center", flex: 1, minWidth: 0 }}>
+            <View
+              style={{
+                width: 40,
+                height: 40,
+                borderRadius: RADIUS.lg,
+                alignItems: "center",
+                justifyContent: "center",
+                backgroundColor: `${c.tint}18`,
+                marginRight: SPACING.sm,
+              }}
+            >
+              <Ionicons name={c.iconName as any} size={22} color={c.tint} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }} numberOfLines={1}>
+                  {item.title}
+                </Text>
+                {item.hasNotification && (
+                  <Ionicons name="notifications" size={14} color={colors.warning} />
+                )}
               </View>
-            )}
+              {!!item.note && (
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }} numberOfLines={1}>
+                  {item.note}
+                </Text>
+              )}
+            </View>
           </View>
-          {!!item.note && (
-            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: 2 }}>
-              {item.note}
-            </Text>
-          )}
+          <TouchableOpacity
+            onPress={(e) => { e?.stopPropagation?.(); onToggle(item.id, !item.active); }}
+            style={{
+              width: 44,
+              height: 26,
+              borderRadius: 13,
+              padding: 2,
+              backgroundColor: item.active ? c.tint : colors.borderLight,
+              justifyContent: "center",
+              alignItems: item.active ? "flex-end" : "flex-start",
+            }}
+          >
+            <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: colors.card, ...SHADOWS.sm }} />
+          </TouchableOpacity>
         </View>
 
-        <TouchableOpacity
-          onPress={() => onToggle(item.id, !item.active)}
-          style={{
-            minWidth: 56,
-            height: 32,
-            borderRadius: 999,
-            padding: 2,
-            backgroundColor: item.active ? colors.accent : colors.borderLight,
-            alignItems: item.active ? "flex-end" : "flex-start",
-            justifyContent: "center",
-          }}
-        >
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginTop: SPACING.sm, gap: SPACING.sm }}>
+          <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }} numberOfLines={1}>
+            {metaLine}
+          </Text>
           <View
             style={{
-              width: 28,
-              height: 28,
-              borderRadius: 14,
-              backgroundColor: colors.card,
-              shadowColor: "#000",
-              shadowOpacity: 0.12,
-              shadowRadius: 3,
-              elevation: 2,
+              paddingHorizontal: 8,
+              paddingVertical: 3,
+              borderRadius: RADIUS.pill,
+              backgroundColor: item.completed
+                ? `${colors.success}18`
+                : isOverdue
+                  ? `${colors.warning}18`
+                  : item.active
+                    ? `${c.tint}18`
+                    : colors.bgSecondary,
             }}
-          />
-        </TouchableOpacity>
-      </View>
+          >
+            <Text style={{
+              ...TYPOGRAPHY.xs,
+              fontWeight: "600",
+              color: item.completed ? colors.success : isOverdue ? colors.warning : item.active ? c.tint : colors.textMuted,
+            }}>
+              {statusLabel}
+            </Text>
+          </View>
+        </View>
 
-      <View style={{ flexDirection: "row", flexWrap: "wrap", marginTop: SPACING.sm }}>
-        <View style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingVertical: 6,
-          paddingHorizontal: 10,
-          borderRadius: 999,
-          backgroundColor: colors.bgSecondary,
-          marginRight: 6,
-          marginBottom: 6,
-        }}>
-          <Ionicons name="calendar-outline" size={14} color={colors.text} style={{ marginRight: 4 }} />
-          <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{dateLabel}</Text>
-        </View>
-        <View style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingVertical: 6,
-          paddingHorizontal: 10,
-          borderRadius: 999,
-          backgroundColor: colors.bgSecondary,
-          marginRight: 6,
-          marginBottom: 6,
-        }}>
-          <Ionicons name="time-outline" size={14} color={colors.text} style={{ marginRight: 4 }} />
-          <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{timeLabel}</Text>
-        </View>
-        {!!item.repeating && (
-          <View style={{
-            flexDirection: "row",
-            alignItems: "center",
-            paddingVertical: 6,
-            paddingHorizontal: 10,
-            borderRadius: 999,
-            backgroundColor: colors.bgSecondary,
-            marginRight: 6,
-            marginBottom: 6,
-          }}>
-            <Ionicons name="repeat-outline" size={14} color={colors.text} style={{ marginRight: 4 }} />
-            <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>{item.repeating}</Text>
+        {!item.completed && (
+          <View style={{ flexDirection: "row", alignItems: "center", marginTop: SPACING.sm, gap: SPACING.sm }}>
+            <TouchableOpacity
+              onPress={() => onComplete?.(item.id)}
+              style={{
+                flexDirection: "row",
+                alignItems: "center",
+                paddingVertical: 6,
+                paddingHorizontal: 12,
+                borderRadius: RADIUS.md,
+                backgroundColor: colors.success + "18",
+                borderWidth: 1,
+                borderColor: colors.success + "50",
+              }}
+            >
+              <Ionicons name="checkmark-circle" size={16} color={colors.success} style={{ marginRight: 6 }} />
+              <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.success }}>Mark complete</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => onOpenActions?.(item)}
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 18,
+                backgroundColor: colors.bgSecondary,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Ionicons name="ellipsis-horizontal" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
           </View>
         )}
-        <View style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingVertical: 6,
-          paddingHorizontal: 10,
-          borderRadius: 999,
-          backgroundColor: colors.bgSecondary,
-          marginRight: 6,
-          marginBottom: 6,
-        }}>
-          <Ionicons name={c.iconName as any} size={14} color={c.tint} style={{ marginRight: 4 }} />
-          <Text style={{ ...TYPOGRAPHY.sm, color: colors.text }}>
-            {item.category[0].toUpperCase() + item.category.slice(1)}
-          </Text>
-        </View>
-        <View style={{
-          flexDirection: "row",
-          alignItems: "center",
-          paddingVertical: 6,
-          paddingHorizontal: 10,
-          borderRadius: 999,
-          backgroundColor: item.completed
-            ? `${colors.success}22`
-            : isOverdue
-              ? `${colors.warning}22`
-              : item.active
-                ? `${colors.accent}18`
-                : colors.bgSecondary,
-          marginRight: 6,
-          marginBottom: 6,
-        }}>
-          <Text style={{ 
-            ...TYPOGRAPHY.sm, 
-            color: item.completed ? colors.success : isOverdue ? colors.warning : item.active ? colors.accent : colors.textMuted 
-          }}>
-            {statusLabel}
-          </Text>
-        </View>
       </View>
-
-      <View style={{ flexDirection: "row", justifyContent: "flex-end", marginTop: SPACING.sm, gap: SPACING.sm }}>
-        <TouchableOpacity
-          onPress={() => onComplete && onComplete(item.id)}
-          style={{
-            borderWidth: 1,
-            borderColor: colors.success,
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-            borderRadius: 10,
-            backgroundColor: `${colors.success}12`,
-          }}
-        >
-          <Text style={{ color: colors.success, fontWeight: "600", fontSize: 12 }}>
-            Mark complete
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => onOpenActions && onOpenActions(item)}
-          style={{
-            borderWidth: 1,
-            borderColor: colors.borderLight,
-            paddingHorizontal: 10,
-            paddingVertical: 6,
-            borderRadius: 10,
-            backgroundColor: colors.bgSecondary,
-          }}
-        >
-          <Text style={{ color: colors.textMuted, fontWeight: "600", fontSize: 12 }}>
-            Options
-          </Text>
-        </TouchableOpacity>
       </View>
-      </TouchableOpacity>
+    </TouchableOpacity>
   );
 };
 
@@ -1280,6 +1224,27 @@ export default function RemindersScreen() {
   const userIdRef = useRef<string | null>(user?.id || null);
   const activePetIdRef = useRef<string | null>(activePetId || null);
   const isCheckingRef = useRef(false);
+  const [headerCompact, setHeaderCompact] = useState(false);
+  const headerCompactRef = useRef(false);
+  const lastScrollYRemindersRef = useRef(0);
+  const SCROLL_DOWN_THRESHOLD = 50;
+  const SCROLL_UP_THRESHOLD = 35;
+  const handleRemindersScroll = useCallback((event: any) => {
+    const y = event.nativeEvent?.contentOffset?.y ?? 0;
+    if (y <= 0) {
+      if (headerCompactRef.current) {
+        headerCompactRef.current = false;
+        setHeaderCompact(false);
+      }
+    } else {
+      const nextCompact = y >= SCROLL_DOWN_THRESHOLD ? true : y <= SCROLL_UP_THRESHOLD ? false : headerCompactRef.current;
+      if (nextCompact !== headerCompactRef.current) {
+        headerCompactRef.current = nextCompact;
+        setHeaderCompact(nextCompact);
+      }
+    }
+    lastScrollYRemindersRef.current = y;
+  }, []);
 
   // Register callback to open add reminder modal
   useEffect(() => {
@@ -1588,25 +1553,20 @@ export default function RemindersScreen() {
         title="Reminders"
         actionIcon="paw"
         onActionPress={() => setShowAddModal(true)}
-        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        centerTitle={headerCompact}
+        titleStyle={headerCompact ? { ...TYPOGRAPHY.sm, fontWeight: "400" } : { ...TYPOGRAPHY.base, fontWeight: "400" }}
         paddingTop={SPACING.lg}
-        paddingBottom={SPACING.lg}
+        paddingBottom={headerCompact ? SPACING.sm : SPACING.lg}
+        insetSeparator
       />
-      
-      <View style={{ 
-        paddingHorizontal: SPACING.lg, 
-        paddingTop: SPACING.md, 
-        paddingBottom: SPACING.md 
-      }}>
-        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>
+
+      <View style={{ marginHorizontal: SPACING.lg, marginBottom: SPACING.md, paddingTop: SPACING.lg }}>
+        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginBottom: SPACING.sm }}>
           Never miss important moments with {petName}
         </Text>
-      </View>
-
-      <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.sm }}>
-        <View style={{ 
-          backgroundColor: colors.bgSecondary, 
-          borderRadius: 999, 
+        <View style={{
+          backgroundColor: colors.bgSecondary,
+          borderRadius: 999,
           padding: 4,
           borderWidth: 1,
           borderColor: colors.borderLight,
@@ -1620,23 +1580,23 @@ export default function RemindersScreen() {
             {(["all", "today", "upcoming", "completed"] as const).map(f => {
               const active = f === filter;
               return (
-                <TouchableOpacity 
-                  key={f} 
-                  onPress={() => setFilter(f)} 
-                  style={{ 
-                    paddingVertical: 8, 
-                    paddingHorizontal: 14, 
-                    borderRadius: 999, 
-                    backgroundColor: active ? colors.card : "transparent", 
+                <TouchableOpacity
+                  key={f}
+                  onPress={() => setFilter(f)}
+                  style={{
+                    paddingVertical: 8,
+                    paddingHorizontal: 14,
+                    borderRadius: 999,
+                    backgroundColor: active ? colors.card : "transparent",
                     marginRight: 4,
                     borderWidth: active ? 1 : 0,
                     borderColor: active ? colors.borderLight : "transparent",
                   }}
                 >
-                  <Text style={{ 
-                    ...TYPOGRAPHY.base, 
+                  <Text style={{
+                    ...TYPOGRAPHY.base,
                     color: active ? colors.accent : colors.text,
-                    fontWeight: active ? "600" : "500"
+                    fontWeight: active ? "600" : "500",
                   }}>
                     {f === "all" ? "Active" : f[0].toUpperCase() + f.slice(1)}
                   </Text>
@@ -1653,16 +1613,17 @@ export default function RemindersScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ paddingHorizontal: SPACING.lg, paddingBottom: 120 }}
         stickySectionHeadersEnabled={false}
-        renderSectionHeader={({ section: { title } }) => (
-          <Text style={{ 
-            ...TYPOGRAPHY.lg, 
-            fontWeight: "800", 
-            color: colors.text, 
-            marginTop: SPACING.lg, 
-            marginBottom: SPACING.sm 
-          }}>
-            {title}
-          </Text>
+        onScroll={handleRemindersScroll}
+        scrollEventThrottle={0}
+        renderSectionHeader={({ section: { title, data } }) => (
+          <View style={{ flexDirection: "row", alignItems: "baseline", marginTop: SPACING.lg, marginBottom: SPACING.sm }}>
+            <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
+              {title}
+            </Text>
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginLeft: 6 }}>
+              {data.length}
+            </Text>
+          </View>
         )}
         renderItem={({ item }) => (
           <ReminderCard

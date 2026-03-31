@@ -1,11 +1,12 @@
 import React, { useState } from "react";
-import { View, Text, Modal, TouchableOpacity, ScrollView, Alert } from "react-native";
+import { View, Text, Modal, TouchableOpacity, ScrollView, Alert, ActivityIndicator } from "react-native";
 import { SPACING, TYPOGRAPHY, RADIUS, SHADOWS } from "@src/theme";
 import { Ionicons } from "@expo/vector-icons";
 import { useNavigation } from "@src/contexts/NavigationContext";
 import { useMemories } from "@src/contexts/MemoriesContext";
 import { usePets } from "@src/contexts/PetContext";
 import { useTheme } from "@src/contexts/ThemeContext";
+import { compressImage } from "@src/utils/imageCompression";
 import MediaPicker from "./MediaPicker";
 import MemoryDetailsModal from "./MemoryDetailsModal";
 
@@ -23,6 +24,8 @@ export default function AddModal({ visible, onClose, onAddReminder }: AddModalPr
   const [showMediaPicker, setShowMediaPicker] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<{ uri: string; type: 'photo' | 'video'; width: number; height: number } | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const handleAddReminder = () => {
     if (onAddReminder) {
@@ -188,27 +191,55 @@ export default function AddModal({ visible, onClose, onAddReminder }: AddModalPr
 
   const options = getScreenOptions();
 
-  const handleMediaSelected = (media: { uri: string; type: 'photo' | 'video'; width: number; height: number }) => {
-    setSelectedMedia(media);
+  const handleMediaSelected = async (media: { uri: string; type: 'photo' | 'video'; width: number; height: number }) => {
     setShowMediaPicker(false);
+    
+    // Compress image before showing details modal (videos don't need compression)
+    if (media.type === 'photo') {
+      setIsProcessing(true);
+      try {
+        const compressedUri = await compressImage(media.uri, {
+          maxWidth: 1080,
+          maxHeight: 1080,
+          quality: 0.75,
+        });
+        setSelectedMedia({ ...media, uri: compressedUri });
+      } catch (error) {
+        console.error('AddModal: Failed to compress image', error);
+        setSelectedMedia(media); // Use original if compression fails
+      } finally {
+        setIsProcessing(false);
+      }
+    } else {
+      setSelectedMedia(media);
+    }
+    
     setShowDetailsModal(true);
   };
 
-  const handleSaveMemoryDetails = ({ title, note }: { title: string; note?: string }) => {
-    if (!selectedMedia) return;
+  const handleSaveMemoryDetails = async ({ title, note }: { title: string; note?: string }) => {
+    if (!selectedMedia || isSaving) return;
     
-    addMemory({
-      type: selectedMedia.type,
-      src: selectedMedia.uri,
-      w: selectedMedia.width,
-      h: selectedMedia.height,
-      title: title,
-      note: note,
-    });
-    
-    setShowDetailsModal(false);
-    setSelectedMedia(null);
-    Alert.alert('Success', 'Memory added successfully!');
+    setIsSaving(true);
+    try {
+      await addMemory({
+        type: selectedMedia.type,
+        src: selectedMedia.uri,
+        w: selectedMedia.width,
+        h: selectedMedia.height,
+        title: title,
+        note: note,
+      });
+      
+      setShowDetailsModal(false);
+      setSelectedMedia(null);
+      Alert.alert('Success', 'Memory added successfully!');
+    } catch (error) {
+      console.error('AddModal: Failed to save memory', error);
+      Alert.alert('Error', 'Failed to save memory. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -352,6 +383,32 @@ export default function AddModal({ visible, onClose, onAddReminder }: AddModalPr
           onSave={handleSaveMemoryDetails}
         />
       )}
+
+      {/* Processing Overlay */}
+      <Modal visible={isProcessing || isSaving} transparent animationType="fade">
+        <View style={{
+          flex: 1,
+          backgroundColor: "rgba(0, 0, 0, 0.7)",
+          justifyContent: "center",
+          alignItems: "center",
+        }}>
+          <View style={{
+            backgroundColor: colors.card,
+            borderRadius: RADIUS.xl,
+            padding: SPACING.xl,
+            alignItems: "center",
+            ...SHADOWS.lg,
+          }}>
+            <ActivityIndicator size="large" color={colors.accent} />
+            <Text style={{ ...TYPOGRAPHY.base, color: colors.text, marginTop: SPACING.md, fontWeight: "600" }}>
+              {isProcessing ? "Processing photo..." : "Saving memory..."}
+            </Text>
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.xs }}>
+              Please wait
+            </Text>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, Alert, Modal } from 'react-native';
+import { View, Text, TouchableOpacity, Alert, Modal, Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { SPACING, TYPOGRAPHY, RADIUS, SHADOWS } from '@src/theme';
 import { Ionicons } from '@expo/vector-icons';
@@ -38,7 +38,7 @@ export default function MediaPicker({ visible, onClose, onMediaSelected }: Media
     try {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         aspect: [1, 1], // Square aspect ratio for uniform grid
         quality: 0.8,
       });
@@ -68,7 +68,7 @@ export default function MediaPicker({ visible, onClose, onMediaSelected }: Media
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.All,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         aspect: [1, 1], // Square aspect ratio for uniform grid
         quality: 0.8,
       });
@@ -99,7 +99,7 @@ export default function MediaPicker({ visible, onClose, onMediaSelected }: Media
     try {
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Videos,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         quality: 0.8,
         videoMaxDuration: 30, // 30 seconds max
       });

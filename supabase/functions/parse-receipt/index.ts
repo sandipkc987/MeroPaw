@@ -133,16 +133,30 @@ Deno.serve(async (req) => {
       auth: { persistSession: false },
     });
 
-    const { data: fileBlob, error: fileError } = await admin.storage
-      .from("receipts")
-      .download(filePath);
+    // Prefer inline content from client (fixes iOS where storage upload can yield empty file)
+    let content: string;
+    const contentBase64 = body?.contentBase64;
+    if (typeof contentBase64 === "string" && contentBase64.length > 0) {
+      content = contentBase64.replace(/^data:[^;]+;base64,/, "");
+    } else {
+      const { data: fileBlob, error: fileError } = await admin.storage
+        .from("receipts")
+        .download(filePath);
 
-    if (fileError || !fileBlob) {
-      throw new Error(`Failed to download receipt: ${fileError?.message}`);
+      if (fileError || !fileBlob) {
+        throw new Error(`Failed to download receipt: ${fileError?.message}`);
+      }
+
+      const buffer = new Uint8Array(await fileBlob.arrayBuffer());
+      content = toBase64(buffer);
     }
 
-    const buffer = new Uint8Array(await fileBlob.arrayBuffer());
-    const content = toBase64(buffer);
+    if (!content || content.length === 0) {
+      return new Response(
+        JSON.stringify({ error: "Receipt content is empty. Try uploading the file again." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
+    }
 
     const accessToken = await getAccessToken(serviceAccountJson);
     const endpoint = `https://documentai.googleapis.com/v1/projects/${projectId}/locations/${location}/processors/${processorId}:process`;

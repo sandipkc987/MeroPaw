@@ -14,6 +14,10 @@ export interface Pet {
   color?: string;
   microchip?: string;
   allergies?: string;
+  weight?: string;
+  isNeutered?: boolean;
+  gender?: string;
+  isServiceAnimal?: boolean;
   photos: string[];
   createdAt: number;
 }
@@ -21,6 +25,7 @@ export interface Pet {
 interface PetContextType {
   pets: Pet[];
   activePetId: string | null;
+  isLoading: boolean;
   addPet: (pet: Omit<Pet, 'id' | 'createdAt'>) => Promise<string>;
   updatePet: (id: string, updates: Partial<Pet>) => Promise<void>;
   deletePet: (id: string) => Promise<void>;
@@ -77,18 +82,30 @@ export function PetProvider({ children }: { children: React.ReactNode }) {
 
   // Load pets and active pet from storage or Supabase
   useEffect(() => {
-    const loadPets = async () => {
+    let cancelled = false;
+    const loadPets = async (isRetry = false) => {
       try {
         if (user?.id) {
+          setIsLoading(true);
           const supabase = getSupabaseClient();
+          // On native (iOS/Android), ensure session is restored from storage before first request.
+          // Otherwise the pets query can run without the JWT and RLS returns empty.
+          if (Platform.OS !== "web") {
+            await supabase.auth.getSession();
+          }
           const { data, error } = await supabase
             .from("pets")
             .select("*")
             .eq("owner_id", user.id)
             .order("created_at", { ascending: true });
 
+          if (cancelled) return;
           if (error) {
-            console.error("PetContext: Failed to load pets from Supabase", error.message);
+            console.warn(`PetContext [${Platform.OS}]: Failed to load pets`, error.message);
+            if (Platform.OS !== "web" && !isRetry) {
+              setTimeout(() => loadPets(true), 2000);
+              return;
+            }
           }
           if (data && data.length > 0) {
             const remotePets: Pet[] = data.map((row: any) => ({
@@ -101,6 +118,10 @@ export function PetProvider({ children }: { children: React.ReactNode }) {
               color: row.color || undefined,
               microchip: row.microchip || undefined,
               allergies: row.allergies || undefined,
+              weight: row.weight || undefined,
+              isNeutered: row.is_neutered === true || row.is_neutered === false ? row.is_neutered : undefined,
+              gender: row.gender || undefined,
+              isServiceAnimal: row.is_service_animal === true || row.is_service_animal === false ? row.is_service_animal : undefined,
               photos: Array.isArray(row.photos) ? row.photos : [],
               createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
             }));
@@ -110,6 +131,10 @@ export function PetProvider({ children }: { children: React.ReactNode }) {
             await storage.setItem(ACTIVE_PET_KEY, JSON.stringify(active));
             await persistPets(remotePets);
           } else {
+            if (Platform.OS !== "web" && !isRetry) {
+              setTimeout(() => loadPets(true), 2000);
+              return;
+            }
             setPets([]);
             setActivePetId(null);
             await storage.removeItem(ACTIVE_PET_KEY);
@@ -143,13 +168,18 @@ export function PetProvider({ children }: { children: React.ReactNode }) {
           setActivePetId(null);
         }
       } catch (error) {
-        console.error("Failed to load pets:", error);
+        console.error("PetContext: Failed to load pets", error);
+        if (Platform.OS !== "web" && !isRetry) {
+          setTimeout(() => loadPets(true), 2000);
+          return;
+        }
       } finally {
-        setIsLoading(false);
+        if (!cancelled) setIsLoading(false);
       }
     };
 
     loadPets();
+    return () => { cancelled = true; };
   }, [user?.id]);
 
   useEffect(() => {
@@ -203,6 +233,10 @@ export function PetProvider({ children }: { children: React.ReactNode }) {
           color: newPet.color || null,
           microchip: newPet.microchip || null,
           allergies: newPet.allergies || null,
+          weight: newPet.weight || null,
+          is_neutered: newPet.isNeutered === true || newPet.isNeutered === false ? newPet.isNeutered : null,
+          gender: newPet.gender || null,
+          is_service_animal: newPet.isServiceAnimal === true || newPet.isServiceAnimal === false ? newPet.isServiceAnimal : false,
           photos: sanitizePhotosForStorage(newPet.photos),
         })
         .select()
@@ -251,6 +285,10 @@ export function PetProvider({ children }: { children: React.ReactNode }) {
         color: updates.color,
         microchip: updates.microchip,
         allergies: updates.allergies,
+        weight: updates.weight,
+        is_neutered: updates.isNeutered === true || updates.isNeutered === false ? updates.isNeutered : undefined,
+        gender: updates.gender,
+        is_service_animal: updates.isServiceAnimal === true || updates.isServiceAnimal === false ? updates.isServiceAnimal : undefined,
         photos: updates.photos ? sanitizePhotosForStorage(updates.photos) : undefined,
       };
       Object.keys(payload).forEach((key) => payload[key] === undefined && delete payload[key]);
@@ -305,6 +343,7 @@ export function PetProvider({ children }: { children: React.ReactNode }) {
       value={{
         pets,
         activePetId,
+        isLoading,
         addPet,
         updatePet,
         deletePet,

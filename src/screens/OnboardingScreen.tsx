@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from "react";
-import { View, Text, TouchableOpacity, Alert, ScrollView, TextInput, StyleSheet, Image, ActivityIndicator, Platform } from "react-native";
+import { View, Text, TouchableOpacity, Alert, ScrollView, TextInput, StyleSheet, Image, ActivityIndicator, Platform, useWindowDimensions, Modal } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import * as ImagePicker from "expo-image-picker";
 import DateTimePicker from "@react-native-community/datetimepicker";
@@ -7,7 +7,7 @@ import ConfettiCannon from "react-native-confetti-cannon";
 import { LinearGradient } from "expo-linear-gradient";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { Banner, Button, Input } from "@src/components/UI";
-import { SPACING, RADIUS, SHADOWS, TYPOGRAPHY } from "@src/theme";
+import { SPACING, RADIUS, SHADOWS, TYPOGRAPHY, FONT_WEIGHTS } from "@src/theme";
 import { usePets } from "@src/contexts/PetContext";
 import { useMemories } from "@src/contexts/MemoriesContext";
 import { useAuth } from "@src/contexts/AuthContext";
@@ -32,6 +32,8 @@ export interface OnboardingResult {
   color?: string;
   microchip?: string;
   allergies?: string;
+  weight?: string;
+  isNeutered?: boolean;
 }
 
 interface OnboardingScreenProps {
@@ -74,7 +76,8 @@ const STEP_DETAILS: Record<
 };
 
 export default function OnboardingScreen({ onComplete, onSuccessContinue }: OnboardingScreenProps) {
-  const { colors } = useTheme();
+  const { colors, isDark } = useTheme();
+  const { width: screenWidth } = useWindowDimensions();
   const { addPet, setActivePet } = usePets();
   const { addMemory } = useMemories();
   const { completeOnboarding, user } = useAuth();
@@ -89,6 +92,8 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
   const [color, setColor] = useState("");
   const [microchip, setMicrochip] = useState("");
   const [allergies, setAllergies] = useState("");
+  const [weight, setWeight] = useState("");
+  const [isNeutered, setIsNeutered] = useState<boolean | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
   const [isMediaProcessing, setIsMediaProcessing] = useState(false);
@@ -116,6 +121,8 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
         if (draft.color) setColor(draft.color);
         if (draft.microchip) setMicrochip(draft.microchip);
         if (draft.allergies) setAllergies(draft.allergies);
+        if (draft.weight) setWeight(draft.weight);
+        if (draft.isNeutered !== undefined) setIsNeutered(draft.isNeutered);
         if (draft.birthDate) {
           const parsed = new Date(draft.birthDate);
           if (!Number.isNaN(parsed.getTime())) setBirthDate(parsed);
@@ -147,6 +154,8 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
         color,
         microchip,
         allergies,
+        weight,
+        isNeutered,
       };
       AsyncStorage.setItem(ONBOARDING_DRAFT_KEY, JSON.stringify(payload)).catch((error) => {
         console.error("OnboardingScreen: Failed to save draft", error);
@@ -164,6 +173,8 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
     color,
     microchip,
     allergies,
+    weight,
+    isNeutered,
     isRestoringDraft,
   ]);
 
@@ -218,6 +229,17 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
       setLocalDate(newDate);
     };
 
+    const changeYear = (delta: number) => {
+      const newDate = new Date(localDate);
+      const newYear = year + delta;
+      const maxYear = new Date().getFullYear();
+      const minYear = maxYear - 30;
+      if (newYear >= minYear && newYear <= maxYear) {
+        newDate.setFullYear(newYear);
+        setLocalDate(newDate);
+      }
+    };
+
     const selectDate = (day: number) => {
       const newDate = new Date(year, month, day);
       onChange(newDate);
@@ -226,15 +248,25 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
     return (
       <View style={{ padding: SPACING.md, backgroundColor: colors.bgSecondary, borderRadius: RADIUS.lg, marginTop: SPACING.md }}>
         <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: SPACING.md }}>
-          <TouchableOpacity onPress={() => changeMonth(-1)}>
-            <Ionicons name="chevron-back" size={20} color={colors.text} />
-          </TouchableOpacity>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <TouchableOpacity onPress={() => changeYear(-1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>«</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => changeMonth(-1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="chevron-back" size={20} color={colors.text} />
+            </TouchableOpacity>
+          </View>
           <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>
             {months[month]} {year}
           </Text>
-          <TouchableOpacity onPress={() => changeMonth(1)}>
-            <Ionicons name="chevron-forward" size={20} color={colors.text} />
-          </TouchableOpacity>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <TouchableOpacity onPress={() => changeMonth(1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="chevron-forward" size={20} color={colors.text} />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => changeYear(1)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>»</Text>
+            </TouchableOpacity>
+          </View>
         </View>
         <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: SPACING.sm }}>
           {days.map(day => (
@@ -313,6 +345,28 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
     return true;
   };
 
+  const requestCameraPermissions = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("Permissions Required", "Please grant camera access to take photos.");
+      return false;
+    }
+    return true;
+  };
+
+  const addPhotoFromUri = async (originalUri: string) => {
+    const compressedUri = await compressImage(originalUri, {
+      maxWidth: 1080,
+      maxHeight: 1080,
+      quality: 0.75,
+    });
+    if (!compressedUri || compressedUri.trim() === "") {
+      Alert.alert("Error", "Failed to process image. Please try again.");
+      return;
+    }
+    setPhotos((prev) => [...prev, { uri: compressedUri, title: "", caption: "" }]);
+  };
+
   const pickPhoto = async () => {
     if (photos.length >= MAX_PHOTOS) {
       Alert.alert("Limit reached", `You can add up to ${MAX_PHOTOS} photos.`);
@@ -327,40 +381,44 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
       setMediaProcessingLabel("Processing photo...");
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         aspect: [1, 1],
         quality: 0.85,
       });
-
       if (!result.canceled && result.assets?.[0]) {
-        const originalUri = result.assets[0].uri;
-        
-        console.log('OnboardingScreen: Compressing image...', { originalUri: originalUri.substring(0, 50) + '...' });
-        const compressedUri = await compressImage(originalUri, {
-          maxWidth: 1080,
-          maxHeight: 1080,
-          quality: 0.75,
-        });
-        
-        console.log('OnboardingScreen: Image compressed', { compressedUri: compressedUri.substring(0, 50) + '...' });
-        
-        if (!compressedUri || compressedUri.trim() === '') {
-          console.error('OnboardingScreen: Invalid compressed URI', { compressedUri });
-          Alert.alert("Error", "Failed to process image. Please try again.");
-          return;
-        }
-        
-        const newPhoto = { uri: compressedUri, title: "", caption: "" };
-        console.log('OnboardingScreen: Adding photo to state', { uri: compressedUri.substring(0, 50) + '...', photoCount: photos.length + 1 });
-        setPhotos((prev) => {
-          const updated = [...prev, newPhoto];
-          console.log('OnboardingScreen: Photos state updated', { count: updated.length });
-          return updated;
-        });
+        await addPhotoFromUri(result.assets[0].uri);
       }
     } catch (error) {
       console.error("OnboardingScreen.pickPhoto error", error);
       Alert.alert("Error", "Unable to pick photo. Please try again.");
+    } finally {
+      setIsMediaProcessing(false);
+      setMediaProcessingLabel("");
+    }
+  };
+
+  const takePhoto = async () => {
+    if (photos.length >= MAX_PHOTOS) {
+      Alert.alert("Limit reached", `You can add up to ${MAX_PHOTOS} photos.`);
+      return;
+    }
+    const permitted = await requestCameraPermissions();
+    if (!permitted) return;
+    try {
+      setIsMediaProcessing(true);
+      setMediaProcessingLabel("Processing photo...");
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: Platform.OS !== "ios",
+        aspect: [1, 1],
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets?.[0]) {
+        await addPhotoFromUri(result.assets[0].uri);
+      }
+    } catch (error) {
+      console.error("OnboardingScreen.takePhoto error", error);
+      Alert.alert("Error", "Unable to take photo. Please try again.");
     } finally {
       setIsMediaProcessing(false);
       setMediaProcessingLabel("");
@@ -376,7 +434,7 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
       setMediaProcessingLabel("Processing photo...");
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         aspect,
         quality: 0.85,
       });
@@ -496,6 +554,8 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
         color: color.trim() || undefined,
         microchip: microchip.trim() || undefined,
         allergies: allergies.trim() || undefined,
+        weight: weight.trim() || undefined,
+        isNeutered,
       };
 
       // Step 1: Create pet (critical - must succeed)
@@ -506,10 +566,11 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
       const month = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
       if (profilePhotoUri && !photoUris.includes(profilePhotoUri)) {
         try {
+          const welcomeTitle = `Welcome, ${petName.trim() || "your pet"}!`;
           addMemory({
             type: 'photo',
-            title: "Profile Photo",
-            note: "Profile photo",
+            title: welcomeTitle,
+            note: undefined,
             src: profilePhotoUri,
             w: 1000,
             h: 1000,
@@ -523,7 +584,7 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
         try {
           addMemory({
             type: 'photo',
-            title: photo.title?.trim() || `Welcome Photo`,
+            title: photo.title?.trim() || "Photo",
             note: photo.caption?.trim() || undefined,
             src: photo.uri,
             w: 1000,
@@ -543,6 +604,8 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
         color: petData.color,
         microchip: petData.microchip,
         allergies: petData.allergies,
+        weight: petData.weight,
+        isNeutered: petData.isNeutered,
         profilePhoto: profilePhotoUri || undefined,
         photos: validPhotos.map(photo => ({
           uri: photo.uri,
@@ -570,6 +633,8 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
           color: petData.color,
           microchip: petData.microchip,
           allergies: petData.allergies,
+          weight: petData.weight,
+          isNeutered: petData.isNeutered,
         };
         await onComplete(payload);
       }
@@ -604,8 +669,11 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
   };
 
   const renderHero = (step: Exclude<OnboardingStep, "success">, title: string) => {
+    // Steps: intro(0), petName(1), bio(2), photos(3), profile(4) - 5 actual steps before success
     const stepNumber = step === "intro" ? 0 : step === "petName" ? 1 : step === "bio" ? 2 : step === "photos" ? 3 : 4;
-    const progressPercent = Math.round(((stepNumber + 1) / (steps.length - 1)) * 100);
+    const totalSteps = steps.length - 1; // exclude success step
+    // Progress shows current step out of total (e.g., petName = step 2 of 5 = 20%)
+    const progressPercent = Math.round((stepNumber / totalSteps) * 100);
     
     return (
       <View style={styles.modernHeroCard}>
@@ -625,8 +693,12 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
             />
           </View>
         </View>
-        <View style={[styles.iconCircle, { backgroundColor: colors.accent + '15' }]}>
-          <Ionicons name={STEP_DETAILS[step].icon} size={32} color={colors.accent} />
+        <View style={[styles.iconCircle, { backgroundColor: step === "profile" && (profilePhotoUri || photos[0]?.uri) ? "transparent" : colors.accent + "15", overflow: "hidden" }]}>
+          {step === "profile" && (profilePhotoUri || photos[0]?.uri) ? (
+            <Image key={profilePhotoUri || photos[0]?.uri} source={{ uri: profilePhotoUri || photos[0]!.uri }} style={styles.heroProfileImage} resizeMode="cover" />
+          ) : (
+            <Ionicons name={STEP_DETAILS[step].icon} size={32} color={colors.accent} />
+          )}
         </View>
         <Text style={[styles.modernTitle, { color: colors.text }]}>{title}</Text>
         <Text style={[styles.modernSubtitle, { color: colors.textMuted }]}>
@@ -716,7 +788,9 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
             )}
           </TouchableOpacity>
           <View style={styles.profilePhotoMeta}>
-            <Text style={[styles.profilePhotoTitle, { color: colors.text }]}>Profile photo</Text>
+            <Text style={[styles.profilePhotoTitle, { color: colors.text }]}>
+              Welcome, {petName.trim() || "your pet"}!
+            </Text>
             <Text style={[styles.profilePhotoHint, { color: colors.textMuted }]}>
               This shows up on the profile header and memories.
             </Text>
@@ -731,50 +805,59 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
           )}
         </View>
 
-        {/* Bumble / Tinder style photo cards */}
-        <View style={styles.photoCardList}>
-          {photos.map((photo, index) => (
-            <View key={photo.uri || index} style={[styles.photoStackCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-              <Image source={{ uri: photo.uri }} style={styles.photoStackImage} resizeMode="cover" />
-              <TouchableOpacity
-                style={styles.photoRemoveButton}
-                onPress={() => removePhoto(index)}
-              >
-                <Ionicons name="close-circle" size={26} color="#FFFFFF" />
-              </TouchableOpacity>
-              <View style={styles.photoStackInputs}>
-                <TextInput
-                  placeholder={`Title for photo ${index + 1}`}
-                  value={photo.title}
-                  onChangeText={(text) => updatePhotoField(index, "title", text)}
-                  placeholderTextColor={colors.textMuted}
-                  style={[styles.photoStackInput, { color: colors.text, borderColor: colors.border }]}
-                />
-                <TextInput
-                  placeholder="Caption (optional)"
-                  value={photo.caption}
-                  onChangeText={(text) => updatePhotoField(index, "caption", text)}
-                  placeholderTextColor={colors.textMuted}
-                  style={[styles.photoStackInput, { color: colors.text, borderColor: colors.border }]}
-                />
-              </View>
-            </View>
-          ))}
+        {/* Add more photos – title, subtitle, two actions */}
+        <View style={{ marginTop: SPACING.xl }}>
+          <Text style={[styles.photoSectionTitle, { color: colors.text }]}>
+            Add more photos of your {petName.trim() || "your pet"}
+          </Text>
+          <Text style={[styles.photoSectionSubtitle, { color: colors.textMuted }]}>
+            You can add up to {MAX_PHOTOS} photos. You can add or change them later.
+          </Text>
           {photos.length < MAX_PHOTOS && (
-            <TouchableOpacity
-              style={[styles.photoAddCardWide, { borderColor: colors.border, backgroundColor: colors.surface }]}
-              onPress={pickPhoto}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.photoAddIcon, { backgroundColor: colors.accent + "20" }]}>
-                <Ionicons name="camera" size={26} color={colors.accent} />
-              </View>
-              <Text style={[styles.photoAddText, { color: colors.textMuted }]}>
-                Add another photo ({photos.length}/{MAX_PHOTOS})
-              </Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.md }}>
+              <TouchableOpacity
+                style={[styles.photoActionButton, { borderColor: colors.border, backgroundColor: colors.surface }]}
+                onPress={pickPhoto}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="add" size={22} color={colors.accent} />
+                <Text style={[styles.photoActionButtonText, { color: colors.text }]}>Add photos</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.photoActionButton, { borderColor: colors.border, backgroundColor: colors.surface }]}
+                onPress={takePhoto}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="camera-outline" size={22} color={colors.accent} />
+                <Text style={[styles.photoActionButtonText, { color: colors.text }]}>Take new photos</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
+
+        {/* Photo grid – compact thumbnails with caption */}
+        {photos.length > 0 && (
+          <View style={[styles.photoGrid, { marginTop: SPACING.lg }]}>
+            {photos.map((photo, index) => {
+              const photoGap = SPACING.sm;
+              const cardWidth = (screenWidth - SPACING.xl * 2 - photoGap) / 2;
+              return (
+                <View key={photo.uri || index} style={[styles.photoGridCard, { width: cardWidth, backgroundColor: colors.surface, borderColor: colors.border }]}>
+                  <View style={[styles.photoGridImageWrap, { width: cardWidth, height: cardWidth }]}>
+                    <Image source={{ uri: photo.uri }} style={styles.photoGridImage} resizeMode="cover" />
+                    <TouchableOpacity
+                      style={styles.photoGridRemove}
+                      onPress={() => removePhoto(index)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="close-circle" size={28} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        )}
       </View>
     );
   };
@@ -782,66 +865,112 @@ export default function OnboardingScreen({ onComplete, onSuccessContinue }: Onbo
   const renderProfile = () => (
     <View style={{ width: "100%" }}>
       {renderHero("profile", `Complete ${petName || "your pet"}'s profile`)}
-      <Text style={[styles.optionalHint, { color: colors.textMuted }]}>
-        All fields are optional - you can add these details later
+      <Text style={[styles.profileOptionalHint, { color: colors.textMuted }]}>
+        All fields are optional — add anytime later
       </Text>
-      <View style={[styles.card, { marginTop: SPACING.md }]}>
-        <View style={styles.fieldGroup}>
-          <Text style={[styles.fieldLabel, { color: colors.text }]}>Basic Info</Text>
-          <Input value={breed} onChangeText={setBreed} placeholder="Breed (optional)" />
-          <Input value={color} onChangeText={setColor} placeholder="Coat color (optional)" />
+
+      <View style={[styles.profileSectionCard, { backgroundColor: colors.surface, borderColor: colors.borderLight, overflow: "hidden" }]}>
+        <LinearGradient
+          colors={[colors.accent + "14", colors.accent + "06", "transparent"]}
+          style={styles.profileSectionGradient}
+        />
+        <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg }}>
+          <Text style={[styles.profileSectionTitle, { color: colors.textMuted }]}>Basic Info</Text>
+          <Input value={breed} onChangeText={setBreed} placeholder="Breed" style={styles.profileInput} />
+          <Input value={color} onChangeText={setColor} placeholder="Coat color" style={styles.profileInput} />
+          <Input value={weight} onChangeText={setWeight} placeholder="Weight (e.g. 10 kg or 22 lbs)" style={styles.profileInput} />
+          <Text style={[styles.profileFieldLabel, { color: colors.text }]}>Neutered?</Text>
+          <View style={styles.neuteredChipsRow}>
+            <TouchableOpacity
+              onPress={() => setIsNeutered(true)}
+              style={[
+                styles.neuteredChip,
+                { borderColor: colors.border, backgroundColor: isNeutered === true ? colors.accent : colors.card },
+              ]}
+            >
+              <Text style={[styles.neuteredChipText, { color: isNeutered === true ? "#fff" : colors.text }]}>Yes</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setIsNeutered(false)}
+              style={[
+                styles.neuteredChip,
+                { borderColor: colors.border, backgroundColor: isNeutered === false ? colors.accent : colors.card },
+              ]}
+            >
+              <Text style={[styles.neuteredChipText, { color: isNeutered === false ? "#fff" : colors.text }]}>No</Text>
+            </TouchableOpacity>
+          </View>
           <TouchableOpacity
-            style={[styles.datePicker, { borderColor: colors.border, backgroundColor: colors.surface }]}
+            style={[styles.profileDateRow, { borderColor: colors.borderLight, backgroundColor: colors.cardSecondary }]}
             onPress={() => setShowDatePicker(true)}
           >
-            <Text style={{ color: birthDate ? colors.text : colors.textMuted }}>
-              {birthDate ? birthDate.toLocaleDateString() : "Birth Date (optional)"}
+            <Text style={[styles.profileDateText, { color: birthDate ? colors.text : colors.textMuted }]}>
+              {birthDate ? birthDate.toLocaleDateString() : "Birth date"}
             </Text>
-            <Ionicons name="calendar-outline" size={18} color={colors.accent} />
+            <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
           </TouchableOpacity>
         </View>
-        
-        <View style={[styles.fieldGroup, { marginTop: SPACING.lg }]}>
-          <Text style={[styles.fieldLabel, { color: colors.text }]}>Health Info</Text>
+      </View>
+
+      <View style={[styles.profileSectionCard, { backgroundColor: colors.surface, borderColor: colors.borderLight, overflow: "hidden" }]}>
+        <LinearGradient
+          colors={[colors.accent + "14", colors.accent + "06", "transparent"]}
+          style={styles.profileSectionGradient}
+        />
+        <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg }}>
+          <Text style={[styles.profileSectionTitle, { color: colors.textMuted }]}>Health Info</Text>
           <Input
             value={microchip}
             onChangeText={setMicrochip}
-            placeholder="Microchip ID (optional)"
+            placeholder="Microchip ID"
             keyboardType="numeric"
+            style={styles.profileInput}
           />
-          <Input value={allergies} onChangeText={setAllergies} placeholder="Allergies (optional)" />
+          <Input value={allergies} onChangeText={setAllergies} placeholder="Allergies" style={styles.profileInput} />
         </View>
       </View>
-      {showDatePicker &&
-        (Platform.OS === "web" ? (
-          <WebDatePicker
-            value={birthDate || new Date()}
-            onChange={(date) => {
-              setBirthDate(date);
-              setShowDatePicker(false);
-            }}
-            onClose={() => setShowDatePicker(false)}
-          />
-        ) : (
-          <DateTimePicker
-            value={birthDate || new Date()}
-            mode="date"
-            display={Platform.OS === "ios" ? "spinner" : "calendar"}
-            onChange={(event, date) => {
-              if (Platform.OS !== "ios") {
-                setShowDatePicker(false);
-              }
-              if (event?.type === "dismissed") {
-                setShowDatePicker(false);
-                return;
-              }
-              if (date) setBirthDate(date);
-              if (Platform.OS === "ios") {
-                setShowDatePicker(false);
-              }
-            }}
-          />
-        ))}
+
+      <Modal visible={showDatePicker} transparent animationType="fade">
+        <TouchableOpacity
+          style={styles.datePickerModalBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowDatePicker(false)}
+        >
+          <TouchableOpacity
+            style={[styles.datePickerModalContent, { backgroundColor: colors.card }]}
+            activeOpacity={1}
+            onPress={() => {}}
+          >
+            {Platform.OS === "web" ? (
+              <WebDatePicker
+                value={birthDate || new Date()}
+                onChange={(date) => {
+                  setBirthDate(date);
+                  setShowDatePicker(false);
+                }}
+                onClose={() => setShowDatePicker(false)}
+              />
+            ) : (
+              <>
+                <DateTimePicker
+                  value={birthDate || new Date()}
+                  mode="date"
+                  display="spinner"
+                  themeVariant={isDark ? "dark" : "light"}
+                  onChange={(event, date) => {
+                    if (event?.type === "dismissed") {
+                      setShowDatePicker(false);
+                      return;
+                    }
+                    if (date) setBirthDate(date);
+                  }}
+                />
+                <Button title="Done" onPress={() => setShowDatePicker(false)} style={{ marginTop: SPACING.md }} />
+              </>
+            )}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 
@@ -1007,6 +1136,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: SPACING.lg,
   },
+  heroProfileImage: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+  },
   modernTitle: {
     fontSize: 28,
     fontWeight: "800",
@@ -1135,8 +1269,70 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
   },
+  photoSectionTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  photoSectionSubtitle: {
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: SPACING.xs,
+  },
+  photoActionButton: {
+    flex: 1,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: SPACING.sm,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+  },
+  photoActionButtonText: {
+    fontSize: 15,
+    fontWeight: "600",
+  },
   photoCardList: {
     gap: SPACING.lg,
+  },
+  photoGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: SPACING.sm,
+  },
+  photoGridCard: {
+    borderRadius: RADIUS.lg,
+    overflow: "hidden",
+    borderWidth: 1,
+    ...SHADOWS.sm,
+  },
+  photoGridImageWrap: {
+    borderRadius: RADIUS.lg,
+    overflow: "hidden",
+    backgroundColor: "#eee",
+  },
+  photoGridImage: {
+    width: "100%",
+    height: "100%",
+  },
+  photoGridRemove: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    padding: 2,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    borderRadius: 14,
+  },
+  photoGridCaption: {
+    fontSize: 13,
+    paddingVertical: SPACING.xs,
+    paddingHorizontal: SPACING.sm,
+    borderBottomWidth: 0,
+    borderLeftWidth: 0,
+    borderRightWidth: 0,
+    borderTopWidth: 1,
+    borderRadius: 0,
   },
   photoStackCard: {
     borderWidth: 1,
@@ -1222,6 +1418,81 @@ const styles = StyleSheet.create({
     width: "100%",
     backgroundColor: "transparent",
     gap: SPACING.md,
+  },
+  profileOptionalHint: {
+    fontSize: 13,
+    fontFamily: FONT_WEIGHTS.regular,
+    textAlign: "center",
+    marginTop: SPACING.xs,
+    marginBottom: SPACING.lg,
+  },
+  profileSectionCard: {
+    width: "100%",
+    borderRadius: RADIUS.xl,
+    paddingTop: 0,
+    marginBottom: SPACING.lg,
+    borderWidth: 1,
+  },
+  profileSectionGradient: {
+    height: 20,
+    width: "100%",
+    marginBottom: SPACING.sm,
+  },
+  profileSectionTitle: {
+    fontSize: 11,
+    fontFamily: FONT_WEIGHTS.semibold,
+    letterSpacing: 1.2,
+    marginBottom: SPACING.md,
+  },
+  profileInput: {
+    marginBottom: SPACING.sm,
+    fontFamily: FONT_WEIGHTS.regular,
+  },
+  profileFieldLabel: {
+    fontSize: 14,
+    fontFamily: FONT_WEIGHTS.semibold,
+    marginTop: SPACING.xs,
+    marginBottom: SPACING.xs,
+  },
+  neuteredChipsRow: {
+    flexDirection: "row",
+    gap: SPACING.sm,
+    marginTop: SPACING.xs,
+  },
+  neuteredChip: {
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+    borderRadius: RADIUS.pill,
+    borderWidth: 1,
+  },
+  neuteredChipText: {
+    fontSize: 14,
+    fontFamily: FONT_WEIGHTS.semibold,
+  },
+  profileDateRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.md,
+    borderRadius: RADIUS.md,
+    borderWidth: 1,
+    marginTop: SPACING.md,
+  },
+  profileDateText: {
+    fontSize: 15,
+    fontFamily: FONT_WEIGHTS.medium,
+  },
+  datePickerModalBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "center",
+    padding: SPACING.xl,
+  },
+  datePickerModalContent: {
+    borderRadius: RADIUS.xl,
+    padding: SPACING.lg,
+    ...SHADOWS.lg,
   },
   datePicker: {
     flexDirection: "row",

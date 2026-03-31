@@ -1,0 +1,152 @@
+MEROPAW – Complete Interview Preparation Guide
+
+1. 30-Second Project Pitch
+
+MEROPAW is a pet-care mobile application designed to help users manage
+pet profiles, medical and vaccination records, expenses, receipts,
+reminders, and push notifications. I built it end-to-end using React
+Native (Expo) for the frontend, Supabase for authentication and
+database, Supabase Edge Functions for backend logic, and Firebase Cloud
+Messaging (FCM) for push notifications.
+
+------------------------------------------------------------------------
+
+2. System Architecture Overview
+
+React Native App -> Supabase Authentication (login/signup/session) ->
+Supabase Database (CRUD operations) -> Supabase Edge Functions
+(server-side processing, receipt parsing) -> Firebase Cloud Messaging
+(push notifications) -> User device receives notification
+
+Key Concepts: - Sensitive operations handled in Edge Functions
+(server-side) - API keys stored securely on backend - Database protected
+with Row-Level Security (RLS)
+
+------------------------------------------------------------------------
+
+3. Database Design (Example Structure)
+
+Tables: - users (via Supabase Auth) - pets (id, owner_user_id FK) -
+medical_records (pet_id FK) - expenses (pet_id, amount, category,
+date) - receipts (image_url, parsed_data, total_amount) - reminders
+(user_id/pet_id, schedule, type) - device_tokens (user_id, fcm_token,
+platform)
+
+Important Concepts: - Foreign keys for relationships - Row-Level
+Security (user_id = auth.uid())
+
+------------------------------------------------------------------------
+
+4. Authentication & Security
+
+-   Supabase Auth handles login/signup/session
+-   JWT-based authentication
+-   Row-Level Security ensures users only access their own data
+-   Tokens stored securely on device
+-   Secrets stored in Edge Functions (not client-side)
+
+------------------------------------------------------------------------
+
+5. API & CRUD Flow
+
+-   Standard CRUD done directly via Supabase client
+-   Complex processing handled by Edge Functions
+-   JSON request/response format
+-   Proper error handling and validation implemented
+
+------------------------------------------------------------------------
+
+6. Supabase Edge Functions
+
+Purpose: - Secure server-side logic - Receipt parsing - Clinical summary
+extraction - Input validation
+
+Concepts to Explain: - HTTP endpoints - Request/response structure -
+Error handling - Idempotency - Security of API keys
+
+------------------------------------------------------------------------
+
+7. Receipt Parsing & Clinical Data Extraction
+
+Process: - Upload receipt image - Extract text (or structured data) -
+Parse total, merchant, date - Store raw and parsed output - Handle
+inconsistencies and validation
+
+Limitations: - Receipt format variability - Added fallback logic and
+validation checks
+
+------------------------------------------------------------------------
+
+8. Push Notifications (Firebase FCM)
+
+Flow: 1. App requests notification permission 2. Device receives FCM
+token 3. Token stored in database 4. Backend sends notification via FCM
+5. User receives push notification
+
+Important Concepts: - Token refresh handling - Multiple device support -
+Platform differences (iOS vs Android)
+
+------------------------------------------------------------------------
+
+9. Reminder Scheduling
+
+-   Reminders stored in database
+-   Triggered via app logic or backend processing
+-   Future improvement: server-side cron job for reliability
+
+------------------------------------------------------------------------
+
+10. React Native Concepts
+
+-   useState, useEffect
+-   Navigation handling
+-   Form validation
+-   API calls and loading states
+-   Component structure and organization
+-   Basic performance considerations
+
+------------------------------------------------------------------------
+
+11. Debugging & Testing
+
+-   Console logs and Supabase logs
+-   Manual testing
+-   Error handling strategies
+-   Future improvement: add unit and integration tests
+
+------------------------------------------------------------------------
+
+12. Deployment & Environment Management
+
+-   Environment variables for dev/prod
+-   Secure handling of API keys
+-   Database migrations
+-   Edge Function deployment
+
+------------------------------------------------------------------------
+
+13. Common Interview Questions
+
+1.  Walk me through the app architecture.
+2.  Why did you choose Supabase and Firebase?
+3.  How does authentication and security work?
+4.  How is your database structured?
+5.  What do Edge Functions do?
+6.  How does receipt parsing work?
+7.  How do push notifications work end-to-end?
+8.  How are reminders triggered?
+9.  What was the hardest problem you solved?
+10. What would you improve next?
+
+------------------------------------------------------------------------
+
+14. Suggested Improvements
+
+-   Server-side scheduling for reminders
+-   Offline-first data handling
+-   Improved receipt parsing accuracy
+-   Add automated testing
+-   CI/CD integration
+-   Performance optimization
+
+End of Guide.

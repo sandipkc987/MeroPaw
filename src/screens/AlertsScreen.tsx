@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { View, Text, SectionList, TouchableOpacity, Image } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
-import { SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
+import { SPACING, TYPOGRAPHY, SHADOWS, RADIUS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { usePets } from "@src/contexts/PetContext";
 import { useNavigation } from "@src/contexts/NavigationContext";
@@ -26,66 +27,17 @@ interface NotificationItem {
   metadata?: Record<string, any>;
 }
 
-// Category Pill Component
-const CategoryPill = ({ kind }: { kind: NotificationKind }) => {
-  const { colors } = useTheme();
-  const getColor = (k: NotificationKind) => {
-    switch (k) {
-      case 'health': return colors.accent; // Using our theme accent for health
-      case 'activity': return '#60A5FA'; // Blue
-      case 'wellness': return '#10B981'; // Green
-      case 'expense': return '#FDBA74'; // Orange
-      case 'memories': return '#FACC15'; // Yellow
-      case 'shop': return '#F471B5'; // Pink
-      case 'reminder': return '#A78BFA'; // Purple
-      default: return colors.textMuted;
-    }
-  };
-
-  const getIcon = (k: NotificationKind) => {
-    switch (k) {
-      case 'health':
-        return 'medkit-outline';
-      case 'activity':
-        return 'walk-outline';
-      case 'wellness':
-        return 'heart-outline';
-      case 'expense':
-        return 'card-outline';
-      case 'memories':
-        return 'images-outline';
-      case 'shop':
-        return 'bag-handle-outline';
-      case 'reminder':
-        return 'alarm-outline';
-      default:
-        return 'notifications-outline';
-    }
-  };
-
-  const color = getColor(kind);
-  const iconName = getIcon(kind);
-
-  return (
-    <View style={{
-      flexDirection: 'row',
-      alignItems: 'center',
-      backgroundColor: `${color}22`,
-      borderRadius: 999,
-      paddingHorizontal: 10,
-      paddingVertical: 4,
-      marginRight: 8
-    }}>
-      <Ionicons name={iconName} size={16} color={color} style={{ marginRight: 6 }} />
-      <Text style={{
-        ...TYPOGRAPHY.xs,
-        color: color,
-        fontWeight: '700'
-      }}>
-        {kind[0].toUpperCase() + kind.slice(1)}
-      </Text>
-    </View>
-  );
+const getKindStyle = (kind: NotificationKind) => {
+  switch (kind) {
+    case 'health': return { icon: 'medkit-outline' as const, tint: '#8B5CF6' };
+    case 'activity': return { icon: 'walk-outline' as const, tint: '#60A5FA' };
+    case 'wellness': return { icon: 'heart-outline' as const, tint: '#10B981' };
+    case 'expense': return { icon: 'card-outline' as const, tint: '#F59E0B' };
+    case 'memories': return { icon: 'images-outline' as const, tint: '#FACC15' };
+    case 'shop': return { icon: 'bag-handle-outline' as const, tint: '#F471B5' };
+    case 'reminder': return { icon: 'alarm-outline' as const, tint: '#A78BFA' };
+    default: return { icon: 'notifications-outline' as const, tint: '#94A3B8' };
+  }
 };
 
 // Notification Card Component
@@ -102,165 +54,126 @@ const NotificationCard = ({
   const t = new Date(item.timeISO);
   const timeLabel = t.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   const dateLabel = t.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-  const accentColor = (() => {
-    switch (item.kind) {
-      case 'health': return colors.accent;
-      case 'activity': return '#60A5FA';
-      case 'wellness': return '#10B981';
-      case 'expense': return '#FDBA74';
-      case 'memories': return '#FACC15';
-      case 'shop': return '#F471B5';
-      case 'reminder': return '#A78BFA';
-      default: return colors.textMuted;
-    }
-  })();
+  const kindStyle = getKindStyle(item.kind);
+
+  const tint = kindStyle.tint;
+  const topGradientColors = [tint + "20", tint + "0A", "transparent"] as const;
+  const leftBarColors = [tint, tint + "00"] as const;
 
   return (
     <TouchableOpacity
-      onPress={() => onPress && onPress(item)}
+      onPress={() => onPress?.(item)}
       activeOpacity={0.95}
       style={{
+        flexDirection: "column",
         backgroundColor: colors.card,
-        borderRadius: 18,
-        padding: SPACING.md,
-        marginBottom: SPACING.md,
+        borderRadius: RADIUS.lg,
+        marginBottom: 6,
         borderWidth: 1,
         borderColor: colors.borderLight,
+        overflow: "hidden",
+        opacity: item.read ? 0.75 : 1,
         ...SHADOWS.sm,
-        opacity: item.read ? 0.7 : 1
       }}
     >
-      <View style={{ flexDirection: 'row' }}>
-        <View style={{
-          width: 52,
-          height: 52,
-          borderRadius: 16,
-          backgroundColor: `${accentColor}20`,
-          alignItems: "center",
-          justifyContent: "center",
-          marginRight: SPACING.md,
-        }}>
-          {item.thumbUrl ? (
-            <Image
-              source={{ uri: item.thumbUrl }}
-              style={{ width: 52, height: 52, borderRadius: 16 }}
-            />
-          ) : (
-            <Ionicons name="notifications-outline" size={24} color={accentColor} />
-          )}
-        </View>
-
-        <View style={{ flex: 1 }}>
-          <View style={{ flexDirection: "row", alignItems: "flex-start", gap: SPACING.sm }}>
-            <Text
-              style={{
-                ...TYPOGRAPHY.lg,
-                fontWeight: "800",
-                color: colors.text,
-                flex: 1,
-              }}
-              numberOfLines={2}
-            >
-              {item.title}
-            </Text>
-            <View
-              style={{
-                paddingHorizontal: 8,
-                paddingVertical: 4,
-                borderRadius: 10,
-                borderWidth: 1,
-                borderColor: colors.borderLight,
-                backgroundColor: colors.surface,
-                alignSelf: "flex-start",
-                maxWidth: 120,
-              }}
-            >
-              <Text
-                style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, textAlign: "right" }}
-                numberOfLines={1}
-              >
-                {dateLabel} · {timeLabel}
-              </Text>
-            </View>
-          </View>
-
-          {!!item.message && (
-            <Text style={{
-              ...TYPOGRAPHY.base,
-              color: colors.textMuted,
-              marginTop: 4
-            }} numberOfLines={2}>
-              {item.message}
-            </Text>
-          )}
-
+      <LinearGradient
+        colors={topGradientColors}
+        style={{ height: 24, width: "100%" }}
+      />
+      <View style={{ flexDirection: "row", flex: 1 }}>
+      <View style={{ width: 4, overflow: "hidden" }}>
+        <LinearGradient
+          colors={leftBarColors}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 4 }}
+        />
+      </View>
+      <View style={{ flex: 1, paddingVertical: SPACING.sm, paddingHorizontal: SPACING.sm }}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
           <View style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            marginTop: 10,
-            gap: 8,
+            width: 36,
+            height: 36,
+            borderRadius: RADIUS.md,
+            backgroundColor: `${kindStyle.tint}18`,
+            alignItems: "center",
+            justifyContent: "center",
+            marginRight: SPACING.sm,
           }}>
-            <CategoryPill kind={item.kind} />
-            {!item.read && (
-              <View style={{
-                width: 8,
-                height: 8,
-                borderRadius: 4,
-                backgroundColor: colors.accent
-              }} />
+            {item.thumbUrl ? (
+              <Image source={{ uri: item.thumbUrl }} style={{ width: 36, height: 36, borderRadius: RADIUS.md }} />
+            ) : (
+              <Ionicons name={kindStyle.icon} size={18} color={kindStyle.tint} />
             )}
           </View>
-        </View>
-      </View>
-      
-      {!!item.ctaLabel && (
-        <View style={{
-          marginTop: 10,
-          alignItems: 'flex-start'
-        }}>
-          <View style={{
-            backgroundColor: `${colors.accent}12`,
-            paddingHorizontal: 12,
-            paddingVertical: 7,
-            borderRadius: 12,
-            borderWidth: 1,
-            borderColor: colors.borderLight
-          }}>
-            <Text style={{
-              ...TYPOGRAPHY.sm,
-              color: colors.accent,
-              fontWeight: "600"
-            }}>
-              {item.ctaLabel}
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "700", color: colors.text }} numberOfLines={1}>
+              {item.title}
+            </Text>
+            <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 1 }}>
+              {dateLabel} · {timeLabel}
             </Text>
           </View>
         </View>
-      )}
-      
-      {onReadToggle && (
-        <TouchableOpacity
-          onPress={() => onReadToggle(item.id)}
-          style={{
-            position: 'absolute',
-            right: 12,
-            bottom: 12
-          }}
-        >
-          <Text style={{
-            ...TYPOGRAPHY.xs,
-            color: colors.accent
-          }}>
-            {item.read ? 'Mark unread' : 'Mark read'}
+
+        {!!item.message && (
+          <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 4 }} numberOfLines={2}>
+            {item.message}
           </Text>
-        </TouchableOpacity>
-      )}
+        )}
+
+        <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginTop: 6, gap: 6 }}>
+          <View style={{
+            flexDirection: "row",
+            alignItems: "center",
+            paddingHorizontal: 6,
+            paddingVertical: 2,
+            borderRadius: RADIUS.pill,
+            backgroundColor: `${kindStyle.tint}18`,
+          }}>
+            <Ionicons name={kindStyle.icon} size={10} color={kindStyle.tint} style={{ marginRight: 3 }} />
+            <Text style={{ fontSize: 10, fontWeight: "600", color: kindStyle.tint }}>
+              {item.kind[0].toUpperCase() + item.kind.slice(1)}
+            </Text>
+          </View>
+          {!item.read && (
+            <View style={{ width: 5, height: 5, borderRadius: 2.5, backgroundColor: colors.accent }} />
+          )}
+        </View>
+
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 6 }}>
+          {item.ctaLabel ? (
+            <TouchableOpacity
+              onPress={() => onPress?.(item)}
+              style={{
+                paddingVertical: 4,
+                paddingHorizontal: 10,
+                borderRadius: RADIUS.sm,
+                backgroundColor: `${tint}18`,
+                borderWidth: 1,
+                borderColor: tint + "40",
+              }}
+            >
+              <Text style={{ ...TYPOGRAPHY.xs, fontWeight: "600", color: tint }}>{item.ctaLabel}</Text>
+            </TouchableOpacity>
+          ) : <View />}
+          {onReadToggle && (
+            <TouchableOpacity onPress={() => onReadToggle(item.id)}>
+              <Text style={{ ...TYPOGRAPHY.xs, fontWeight: "600", color: tint }}>
+                {item.read ? "Mark unread" : "Mark read"}
+              </Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+      </View>
     </TouchableOpacity>
   );
 };
 
 export default function AlertsScreen() {
   const { colors } = useTheme();
-  const { navigateTo, setNavHidden } = useNavigation();
+  const { navigateTo, setNavHidden, goBack, canGoBack, setActiveScreen, setActiveTab, setUnreadNotificationCount } = useNavigation();
   const { user } = useAuth();
   const { getActivePet } = usePets();
   const activePet = getActivePet();
@@ -271,6 +184,10 @@ export default function AlertsScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const lastScrollYRef = useRef(0);
+  const [headerCompact, setHeaderCompact] = useState(false);
+  const headerCompactRef = useRef(false);
+  const SCROLL_DOWN_THRESHOLD = 50;  // switch to compact (center) when scrolled past this
+  const SCROLL_UP_THRESHOLD = 35;     // switch back to expanded (left) when above this
 
   const visibleItems = useMemo(() => {
     if (filter === "unread") return items.filter(item => !item.read);
@@ -279,8 +196,12 @@ export default function AlertsScreen() {
 
   const sections = useMemo(() => {
     const sectionKey = (d: Date) => {
-      const diffDays = Math.floor((Date.now() - d.getTime()) / (24 * 60 * 60 * 1000));
-      if (diffDays <= 0) return 'Today';
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const itemDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      const diffDays = Math.floor((today.getTime() - itemDate.getTime()) / (24 * 60 * 60 * 1000));
+      
+      if (diffDays === 0) return 'Today';
       if (diffDays <= 6) return 'Earlier this Week';
       return 'This Month';
     };
@@ -297,11 +218,16 @@ export default function AlertsScreen() {
 
   const toggleRead = (id: string) => {
     let nextRead = false;
-    setItems(prev => prev.map(n => {
-      if (n.id !== id) return n;
-      nextRead = !n.read;
-      return { ...n, read: nextRead };
-    }));
+    setItems(prev => {
+      const updated = prev.map(n => {
+        if (n.id !== id) return n;
+        nextRead = !n.read;
+        return { ...n, read: nextRead };
+      });
+      const newUnreadCount = updated.filter(n => !n.read).length;
+      setUnreadNotificationCount(newUnreadCount);
+      return updated;
+    });
     if (user?.id) {
       updateNotificationRead(user.id, id, nextRead).catch(error => {
         console.error("Failed to update notification read state:", error);
@@ -319,7 +245,12 @@ export default function AlertsScreen() {
       updateNotificationRead(user.id, item.id, true).catch(error => {
         console.error("Failed to update notification read state:", error);
       });
-      setItems(prev => prev.map(n => n.id === item.id ? { ...n, read: true } : n));
+      setItems(prev => {
+        const updated = prev.map(n => n.id === item.id ? { ...n, read: true } : n);
+        const newUnreadCount = updated.filter(n => !n.read).length;
+        setUnreadNotificationCount(newUnreadCount);
+        return updated;
+      });
     }
     const metaType = item.metadata?.type;
     if (item.kind === "reminder") {
@@ -346,10 +277,18 @@ export default function AlertsScreen() {
     const delta = y - lastScrollYRef.current;
     if (y <= 0) {
       setNavHidden(false);
-    } else if (delta > 12) {
-      setNavHidden(true);
-    } else if (delta < -12) {
-      setNavHidden(false);
+      if (headerCompactRef.current) {
+        headerCompactRef.current = false;
+        setHeaderCompact(false);
+      }
+    } else {
+      if (delta > 12) setNavHidden(true);
+      else if (delta < -12) setNavHidden(false);
+      const nextCompact = y >= SCROLL_DOWN_THRESHOLD ? true : y <= SCROLL_UP_THRESHOLD ? false : headerCompactRef.current;
+      if (nextCompact !== headerCompactRef.current) {
+        headerCompactRef.current = nextCompact;
+        setHeaderCompact(nextCompact);
+      }
     }
     lastScrollYRef.current = y;
   };
@@ -361,6 +300,7 @@ export default function AlertsScreen() {
   const loadNotifications = useCallback(async () => {
     if (!user?.id) {
       setItems([]);
+      setUnreadNotificationCount(0);
       return;
     }
     setIsLoading(true);
@@ -368,24 +308,27 @@ export default function AlertsScreen() {
     try {
       const data = await fetchNotifications(user.id, activePet?.id);
       setItems(data);
+      const newUnreadCount = data.filter((n: NotificationItem) => !n.read).length;
+      setUnreadNotificationCount(newUnreadCount);
     } catch (error) {
       console.error("Failed to load notifications:", error);
       setErrorMessage("Couldn't load notifications. Please try again.");
     } finally {
       setIsLoading(false);
     }
-  }, [user?.id, activePet?.id]);
+  }, [user?.id, activePet?.id, setUnreadNotificationCount]);
 
   const handleMarkAllRead = useCallback(async () => {
     if (!user?.id) return;
     setItems(prev => prev.map(n => ({ ...n, read: true })));
+    setUnreadNotificationCount(0);
     try {
       await markAllNotificationsRead(user.id, activePet?.id);
     } catch (error) {
       console.error("Failed to mark all as read:", error);
       await loadNotifications();
     }
-  }, [user?.id, activePet?.id, loadNotifications]);
+  }, [user?.id, activePet?.id, loadNotifications, setUnreadNotificationCount]);
 
   useEffect(() => {
     let cancelled = false;
@@ -403,7 +346,23 @@ export default function AlertsScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScreenHeader title="Notifications" showBackButton={false} />
+      <ScreenHeader
+        title="Notifications"
+        showBackButton
+        centerTitle={headerCompact}
+        titleStyle={headerCompact ? { ...TYPOGRAPHY.sm, fontWeight: "400" } : { ...TYPOGRAPHY.base, fontWeight: "400" }}
+        paddingTop={SPACING.lg}
+        paddingBottom={headerCompact ? SPACING.sm : SPACING.lg}
+        insetSeparator
+        onBackPress={() => {
+          if (canGoBack) {
+            goBack();
+            return;
+          }
+          setActiveScreen(null);
+          setActiveTab("home");
+        }}
+      />
       <SectionList
         sections={sections}
         keyExtractor={item => item.id}
@@ -413,7 +372,7 @@ export default function AlertsScreen() {
         }}
         stickySectionHeadersEnabled={false}
         onScroll={handleScroll}
-        scrollEventThrottle={16}
+        scrollEventThrottle={0}
         ListHeaderComponent={
           <View style={{ paddingTop: SPACING.sm, paddingBottom: SPACING.md }}>
             {errorMessage ? (
@@ -435,14 +394,13 @@ export default function AlertsScreen() {
                 </TouchableOpacity>
               </View>
             ) : null}
-            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginBottom: SPACING.sm }}>
               Keeping up with {petNamePossessive} world
             </Text>
             <View style={{
               flexDirection: "row",
               alignItems: "center",
               justifyContent: "space-between",
-              marginTop: SPACING.sm,
               gap: SPACING.sm,
             }}>
               <View style={{
@@ -509,16 +467,15 @@ export default function AlertsScreen() {
             </View>
           </View>
         }
-        renderSectionHeader={({ section: { title } }) => (
-          <Text style={{
-            ...TYPOGRAPHY.lg,
-            fontWeight: '800',
-            color: colors.text,
-            marginTop: SPACING.lg,
-            marginBottom: SPACING.sm
-          }}>
-            {title}
-          </Text>
+        renderSectionHeader={({ section: { title, data } }) => (
+          <View style={{ flexDirection: "row", alignItems: "baseline", marginTop: SPACING.lg, marginBottom: SPACING.sm }}>
+            <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
+              {title}
+            </Text>
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginLeft: 6 }}>
+              {data.length}
+            </Text>
+          </View>
         )}
         renderItem={({ item }) => (
           <NotificationCard
@@ -528,34 +485,31 @@ export default function AlertsScreen() {
           />
         )}
         ListEmptyComponent={
-          <View style={{ alignItems: 'center', paddingTop: 80 }}>
+          <View style={{ alignItems: "center", paddingTop: 64, paddingHorizontal: SPACING.xl }}>
             <View
               style={{
-                width: 64,
-                height: 64,
-                borderRadius: 32,
-                backgroundColor: colors.accent + "15",
+                width: 72,
+                height: 72,
+                borderRadius: 36,
+                backgroundColor: colors.accent + "18",
                 alignItems: "center",
                 justifyContent: "center",
-                marginBottom: SPACING.md,
+                marginBottom: SPACING.lg,
               }}
             >
               <Ionicons
                 name={isLoading ? "hourglass-outline" : "notifications-off-outline"}
-                size={28}
+                size={32}
                 color={colors.accent}
               />
             </View>
-            <Text style={{
-              ...TYPOGRAPHY.base,
-              color: colors.text
-            }}>
-              {isLoading ? "Loading notifications..." : "You're all caught up"}
+            <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text, textAlign: "center" }}>
+              {isLoading ? "Loading…" : "You're all caught up"}
             </Text>
             <Text style={{
               ...TYPOGRAPHY.sm,
               color: colors.textMuted,
-              marginTop: SPACING.xs,
+              marginTop: SPACING.sm,
               marginBottom: SPACING.lg,
               textAlign: "center",
             }}>
@@ -564,11 +518,7 @@ export default function AlertsScreen() {
                 : "Turn on alerts to stay updated on health and reminders."}
             </Text>
             {errorMessage ? (
-              <Button
-                title="Retry"
-                onPress={loadNotifications}
-                size="sm"
-              />
+              <Button title="Retry" onPress={loadNotifications} size="sm" />
             ) : (
               <Button
                 title="Manage notifications"

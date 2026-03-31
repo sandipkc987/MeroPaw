@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import { getSupabaseClient, supabaseAnonKey, supabaseUrl } from "@src/services/supabaseClient";
 import { getNotificationPreferences, shouldSendNotification } from "@src/services/notificationPreferences";
 import * as FileSystemLegacy from "expo-file-system/legacy";
@@ -53,7 +54,9 @@ async function readFileAsArrayBuffer(uri: string): Promise<ArrayBuffer> {
       throw new Error("Unable to read file for upload.");
     }
     const bytes = base64ToUint8Array(base64);
-    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+    const newBuffer = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(newBuffer).set(bytes);
+    return newBuffer;
   }
 }
 
@@ -75,12 +78,27 @@ async function signedOrPublicUrl(bucket: string, path?: string | null): Promise<
     const supabase = getSupabaseClient();
     const { data, error } = await supabase.storage
       .from(bucket)
-      .createSignedUrl(path, 60 * 60); // 1 hour
+      .createSignedUrl(path, 60 * 60 * 24 * 7); // 7d — web <img> signed URLs; refresh feed to renew
     if (!error && data?.signedUrl) return data.signedUrl;
   } catch {
     // Fall back to public URL below.
   }
   return publicUrl(bucket, path);
+}
+
+/**
+ * Resolves a memory image URL safe for browsers (https signed or public).
+ * Use on web: public URLs alone fail for private buckets; relative storage_path breaks <img src>.
+ */
+export async function resolveMemoryImageUrl(
+  storagePath: string | null | undefined
+): Promise<string | undefined> {
+  if (!storagePath || typeof storagePath !== "string") return undefined;
+  const t = storagePath.trim();
+  if (!t) return undefined;
+  if (/^https?:\/\//i.test(t)) return t;
+  if (!isValidStoragePath(t)) return undefined;
+  return signedOrPublicUrl(MEMORY_BUCKET, t);
 }
 
 async function ensureBucketExists(bucket: string): Promise<void> {
@@ -124,9 +142,13 @@ export async function uploadToBucket(
     }
     throw new Error(`Upload failed: ${error.message}`);
   }
-  const url = publicUrl(bucket, filePath);
+  let url = publicUrl(bucket, filePath);
   if (!url) {
     throw new Error("Upload succeeded but public URL was missing.");
+  }
+  if (Platform.OS === "web" && bucket === MEMORY_BUCKET) {
+    const signed = await signedOrPublicUrl(bucket, filePath);
+    if (signed) url = signed;
   }
   return { path: filePath, url };
 }
@@ -485,6 +507,8 @@ export async function fetchVetAppointments(userId: string, petId: string) {
     appointmentDate: row.appointment_date,
     appointmentTime: normalizeTime(row.appointment_time),
     clinicName: row.clinic_name || undefined,
+    clinicWebsite: row.clinic_website || undefined,
+    clinicPhone: row.clinic_phone || undefined,
     doctorName: row.doctor_name || undefined,
     addressLine1: row.address_line1 || undefined,
     city: row.city || undefined,
@@ -493,8 +517,55 @@ export async function fetchVetAppointments(userId: string, petId: string) {
     reason: row.reason || undefined,
     notes: row.notes || undefined,
     status: row.status || "scheduled",
+    calendarEventId: row.calendar_event_id || undefined,
     createdAt: row.created_at || undefined,
   }));
+}
+
+export interface SavedVet {
+  name: string;
+  address: string;
+  website: string;
+  phone: string;
+}
+
+export async function fetchSavedVet(userId: string, petId: string): Promise<SavedVet | null> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from("saved_vets")
+    .select("clinic_name, address, website, phone")
+    .eq("owner_id", userId)
+    .eq("pet_id", petId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data?.clinic_name) return null;
+  return {
+    name: data.clinic_name,
+    address: data.address || "",
+    website: data.website || "",
+    phone: data.phone || "",
+  };
+}
+
+export async function upsertSavedVet(
+  userId: string,
+  petId: string,
+  vet: { name: string; address: string; website: string; phone: string }
+): Promise<void> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from("saved_vets").upsert(
+    {
+      owner_id: userId,
+      pet_id: petId,
+      clinic_name: vet.name,
+      address: vet.address || null,
+      website: vet.website || null,
+      phone: vet.phone || null,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "owner_id,pet_id" }
+  );
+  if (error) throw error;
 }
 
 export async function fetchWellnessInputs(userId: string, petId: string) {
@@ -504,8 +575,8 @@ export async function fetchWellnessInputs(userId: string, petId: string) {
     .select("*")
     .eq("owner_id", userId)
     .eq("pet_id", petId)
-    .single();
-  if (error && error.code !== "PGRST116") throw error;
+    .maybeSingle();
+  if (error) throw error;
   if (!data) return null;
   return {
     preventive: data.preventive || undefined,
@@ -593,6 +664,8 @@ export async function insertVetAppointment(userId: string, petId: string, appoin
     appointment_date: appointment.appointmentDate,
     appointment_time: appointment.appointmentTime || null,
     clinic_name: appointment.clinicName || null,
+    clinic_website: appointment.clinicWebsite || null,
+    clinic_phone: appointment.clinicPhone || null,
     doctor_name: appointment.doctorName || null,
     address_line1: appointment.addressLine1 || null,
     city: appointment.city || null,
@@ -601,6 +674,7 @@ export async function insertVetAppointment(userId: string, petId: string, appoin
     reason: appointment.reason || null,
     notes: appointment.notes || null,
     status: appointment.status || "scheduled",
+    calendar_event_id: appointment.calendar_event_id ?? null,
   };
   const { data, error } = await supabase.from("vet_appointments").insert(payload).select().single();
   if (error) throw error;
@@ -614,6 +688,8 @@ export async function updateVetAppointment(userId: string, appointmentId: string
     appointment_date: updates.appointmentDate,
     appointment_time: updates.appointmentTime || null,
     clinic_name: updates.clinicName || null,
+    clinic_website: updates.clinicWebsite || null,
+    clinic_phone: updates.clinicPhone || null,
     doctor_name: updates.doctorName || null,
     address_line1: updates.addressLine1 || null,
     city: updates.city || null,
@@ -622,6 +698,7 @@ export async function updateVetAppointment(userId: string, appointmentId: string
     reason: updates.reason || null,
     notes: updates.notes || null,
     status: updates.status || "scheduled",
+    calendar_event_id: updates.calendar_event_id,
     updated_at: new Date().toISOString(),
   };
   Object.keys(payload).forEach(key => payload[key] === undefined && delete payload[key]);
@@ -853,7 +930,14 @@ export async function uploadProfilePhoto(
   return uploadToBucket(MEMORY_BUCKET, fileUri, filePath, guessMimeType(fileUri, "image"));
 }
 
+function isValidStoragePath(path: string | null | undefined): boolean {
+  if (!path || typeof path !== "string") return false;
+  const t = path.trim();
+  return t.length > 1 && !t.startsWith(".") && !t.includes("..");
+}
+
 export function getMemoryPublicUrl(path: string) {
+  if (!isValidStoragePath(path)) return undefined;
   return publicUrl(MEMORY_BUCKET, path);
 }
 
@@ -917,11 +1001,17 @@ export async function sendTestPush(userId: string) {
   if (!tokens.length) {
     throw new Error("No push tokens found for this user.");
   }
-  await invokeFunctionWithAuth("send-fcm", {
+  const result = await invokeFunctionWithAuth("send-fcm", {
     notification: { title: "Meropaw Test", body: "Push is working!" },
     data: { type: "test" },
     tokens,
   });
+  const results = (result as any)?.results || [];
+  const failed = results.filter((r: any) => !r.ok);
+  if (failed.length) {
+    const msg = failed.map((r: any) => r.error || "Unknown").join("; ");
+    throw new Error(`Push failed for some devices: ${msg}`);
+  }
 }
 
 export type PetProfileExtras = {
@@ -979,5 +1069,68 @@ export async function upsertPetProfileExtras(
       { onConflict: "owner_id,pet_id" }
     );
   if (error) throw error;
+}
+
+/**
+ * Deletes all data for the given user: DB rows (all tables) and storage files.
+ * Call this before logout when user chooses "Delete All Data".
+ * RLS ensures only the authenticated user's data is deleted.
+ */
+export async function deleteAllUserData(userId: string): Promise<void> {
+  const supabase = getSupabaseClient();
+
+  // 1. Get storage paths before deleting rows (documents.file_path, memories.storage_path)
+  const { data: docs } = await supabase.from("documents").select("id, file_path").eq("user_id", userId);
+  const docIds = (docs || []).map((d: { id: string }) => d.id);
+  const docPaths = (docs || []).map((d: { file_path?: string }) => d.file_path).filter(Boolean) as string[];
+
+  const { data: memoryRows } = await supabase.from("memories").select("storage_path").eq("owner_id", userId);
+  const memoryPaths = (memoryRows || []).map((m: { storage_path: string }) => m.storage_path).filter(Boolean);
+
+  // 2. Delete expense_extractions (FK to documents)
+  if (docIds.length > 0) {
+    await supabase.from("expense_extractions").delete().in("document_id", docIds);
+  }
+  await supabase.from("documents").delete().eq("user_id", userId);
+  await supabase.from("expenses").delete().eq("user_id", userId);
+
+  // 3. Feed and auth
+  await supabase.from("feed_likes").delete().eq("user_id", userId);
+  await supabase.from("feed_comments").delete().eq("user_id", userId);
+  await supabase.from("reminders").delete().eq("owner_id", userId);
+  await supabase.from("notifications").delete().eq("owner_id", userId);
+  await supabase.from("push_tokens").delete().eq("owner_id", userId);
+  await supabase.from("auth_devices").delete().eq("owner_id", userId);
+
+  // 4. Pet-scoped and owner-scoped
+  await supabase.from("pet_visibility_policies").delete().eq("owner_id", userId);
+  await supabase.from("pet_status_posts").delete().eq("owner_id", userId);
+  await supabase.from("wellness_inputs").delete().eq("owner_id", userId);
+  await supabase.from("pet_weight_history").delete().eq("owner_id", userId);
+  await supabase.from("health_records").delete().eq("owner_id", userId);
+  await supabase.from("vet_appointments").delete().eq("owner_id", userId);
+  await supabase.from("saved_vets").delete().eq("owner_id", userId);
+  await supabase.from("activities").delete().eq("owner_id", userId);
+  await supabase.from("memories").delete().eq("owner_id", userId);
+  await supabase.from("pet_profile_extras").delete().eq("owner_id", userId);
+  await supabase.from("pets").delete().eq("owner_id", userId);
+  await supabase.from("user_profiles").delete().eq("owner_id", userId);
+
+  // 5. Storage: receipts, memories, health-documents (prefix by userId)
+  for (const path of docPaths) {
+    await supabase.storage.from(RECEIPT_BUCKET).remove([path]);
+  }
+  for (const path of memoryPaths) {
+    await supabase.storage.from(MEMORY_BUCKET).remove([path]);
+  }
+  try {
+    const { data: healthFiles } = await supabase.storage.from(HEALTH_BUCKET).list(userId);
+    if (healthFiles?.length) {
+      const names = healthFiles.map((f) => f.name);
+      await supabase.storage.from(HEALTH_BUCKET).remove(names.map((n) => `${userId}/${n}`));
+    }
+  } catch {
+    // Bucket or list may fail; continue
+  }
 }
 

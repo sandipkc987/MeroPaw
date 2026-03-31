@@ -121,3 +121,82 @@ export async function compressImages(
   return Promise.all(uris.map(uri => compressImage(uri, options)));
 }
 
+const MAX_CAPTION_IMAGE_SIZE = 768;
+
+/**
+ * Resize image to max 768px (longest side) and return base64.
+ * Used for caption generation only - keeps Gemini token cost at ~258 tokens per image.
+ * On web or when ImageManipulator is unavailable, returns original image as base64.
+ */
+export async function resizeImageForCaption(uri: string): Promise<{ base64: string; mimeType: string }> {
+  const mimeType = uri.toLowerCase().includes('.png') ? 'image/png' : 'image/jpeg';
+
+  const getBase64FromUri = async (): Promise<string> => {
+    if (uri.startsWith('data:')) return uri.split(',')[1];
+    if (uri.startsWith('http://') || uri.startsWith('https://')) {
+      const res = await fetch(uri);
+      const blob = await res.blob();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const result = reader.result as string;
+          resolve(result.split(',')[1] || '');
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+    return FileSystem.readAsStringAsync(uri, { encoding: FileSystem.EncodingType.Base64 });
+  };
+
+  if (Platform.OS === 'web' || !ImageManipulator) {
+    const base64 = await getBase64FromUri();
+    return { base64, mimeType };
+  }
+
+  try {
+    // Only resize when we have a file path (picker on device)
+    if (!uri.startsWith('file://') && !uri.startsWith('/')) {
+      const base64 = await getBase64FromUri();
+      return { base64, mimeType };
+    }
+
+    const imageInfo = await ImageManipulator.manipulateAsync(uri, [], {
+      format: ImageManipulator.SaveFormat.JPEG,
+    });
+
+    let resizeWidth = imageInfo.width;
+    let resizeHeight = imageInfo.height;
+
+    if (resizeWidth > MAX_CAPTION_IMAGE_SIZE || resizeHeight > MAX_CAPTION_IMAGE_SIZE) {
+      const ratio = Math.min(
+        MAX_CAPTION_IMAGE_SIZE / resizeWidth,
+        MAX_CAPTION_IMAGE_SIZE / resizeHeight
+      );
+      resizeWidth = Math.round(resizeWidth * ratio);
+      resizeHeight = Math.round(resizeHeight * ratio);
+    }
+
+    const actions: any[] = [];
+    if (resizeWidth !== imageInfo.width || resizeHeight !== imageInfo.height) {
+      actions.push({ resize: { width: resizeWidth, height: resizeHeight } });
+    }
+
+    const result = await ImageManipulator.manipulateAsync(
+      uri,
+      actions,
+      { format: ImageManipulator.SaveFormat.JPEG, compress: 0.85 }
+    );
+
+    const base64 = await FileSystem.readAsStringAsync(result.uri, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
+
+    return { base64, mimeType: 'image/jpeg' };
+  } catch (error) {
+    console.warn('resizeImageForCaption failed, using original', error);
+    const base64 = await getBase64FromUri();
+    return { base64, mimeType };
+  }
+}
+

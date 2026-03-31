@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from "react";
-import { View, Text, ScrollView, TouchableOpacity, Image, Modal, Alert, Dimensions, StatusBar } from "react-native";
+import React, { useMemo, useState, useRef, useCallback, useEffect } from "react";
+import { View, Text, ScrollView, TouchableOpacity, Image, Modal, Alert, Dimensions, StatusBar, ActivityIndicator } from "react-native";
+import { LinearGradient } from "expo-linear-gradient";
 import { SPACING, TYPOGRAPHY, RADIUS, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import ScreenHeader from "@src/components/ScreenHeader";
@@ -8,9 +9,11 @@ import ActionSheet, { ActionSheetOption } from "@src/components/ActionSheet";
 import EmptyState from "@src/components/EmptyState";
 import MediaPicker from "@src/components/MediaPicker";
 import MemoryDetailsModal from "@src/components/MemoryDetailsModal";
+import PinchZoomableImage from "@src/components/PinchZoomableImage";
 import { useMemories, MemoryItem, MemoryType } from "@src/contexts/MemoriesContext";
 import { usePets } from "@src/contexts/PetContext";
 import { Ionicons } from "@expo/vector-icons";
+import { compressImage } from "@src/utils/imageCompression";
 
 // Filter Segment Component
 const FilterSegment = ({ 
@@ -64,11 +67,113 @@ const FilterSegment = ({
   );
 };
 
+type ThemeColors = ReturnType<typeof useTheme>["colors"];
+
+function MemoryGridThumb({
+  uri,
+  itemWidth,
+  gap,
+  isLastInRow,
+  colors,
+  onPress,
+  isVideo,
+  isFavorite,
+}: {
+  uri: string;
+  itemWidth: number;
+  gap: number;
+  isLastInRow: boolean;
+  colors: ThemeColors;
+  onPress: () => void;
+  isVideo: boolean;
+  isFavorite: boolean;
+}) {
+  const [failed, setFailed] = useState(false);
+  const missingUri = !uri?.trim();
+  useEffect(() => {
+    setFailed(missingUri);
+  }, [uri, missingUri]);
+
+  return (
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.9}
+      style={{
+        width: itemWidth,
+        height: itemWidth,
+        marginRight: isLastInRow ? 0 : gap,
+        marginBottom: gap,
+        borderRadius: RADIUS.md,
+        overflow: "hidden",
+      }}
+    >
+      {failed || missingUri ? (
+        <View
+          style={{
+            width: "100%",
+            height: "100%",
+            backgroundColor: colors.bgSecondary,
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Ionicons name="image-outline" size={28} color={colors.textMuted} />
+        </View>
+      ) : (
+        <Image
+          source={{ uri }}
+          style={{
+            width: "100%",
+            height: "100%",
+            backgroundColor: colors.bgSecondary,
+          }}
+          resizeMode="cover"
+          onError={() => setFailed(true)}
+        />
+      )}
+      {isVideo && (
+        <View
+          style={{
+            position: "absolute",
+            right: 6,
+            top: 6,
+            width: 22,
+            height: 22,
+            borderRadius: 11,
+            backgroundColor: "rgba(0,0,0,0.6)",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Ionicons name="play" size={12} color="#fff" />
+        </View>
+      )}
+      {isFavorite && (
+        <View
+          style={{
+            position: "absolute",
+            right: 6,
+            top: 6,
+            width: 22,
+            height: 22,
+            borderRadius: 11,
+            backgroundColor: "rgba(255, 59, 48, 0.9)",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Ionicons name="heart" size={12} color="#fff" />
+        </View>
+      )}
+    </TouchableOpacity>
+  );
+}
+
 // Uniform Grid Component (like iPhone/Samsung galleries)
 const UniformGrid = ({ 
   items, 
   columns = 3, 
-  gap = 6, 
+  gap = 3, 
   onPressItem 
 }: { 
   items: MemoryItem[]; 
@@ -78,89 +183,32 @@ const UniformGrid = ({
 }) => {
   const { colors } = useTheme();
   const screenWidth = Dimensions.get('window').width;
-  const horizontalPadding = SPACING.lg * 2; // Padding from parent container
+  const horizontalPadding = SPACING.lg * 2;
   const availableWidth = screenWidth - horizontalPadding;
   const itemWidth = (availableWidth - (gap * (columns - 1))) / columns;
   
   return (
     <View style={{ 
       flexDirection: "row", 
-      flexWrap: "wrap", 
-      marginHorizontal: -gap/2 
+      flexWrap: "wrap",
     }}>
       {items.map((m, index) => {
         const isVideo = m.type === "video";
         const isFavorite = m.isFavorite;
+        const isLastInRow = (index + 1) % columns === 0;
         
         return (
-          <TouchableOpacity 
-            key={m.id} 
-            onPress={() => onPressItem && onPressItem(index)} 
-            activeOpacity={0.85}
-            style={{
-              width: itemWidth,
-              paddingHorizontal: gap/2,
-              paddingBottom: gap,
-            }}
-          >
-            <View style={{ 
-              position: "relative", 
-              borderRadius: RADIUS.lg, 
-              overflow: "hidden", 
-              backgroundColor: colors.bgSecondary,
-              aspectRatio: 1,
-              ...SHADOWS.sm
-            }}>
-              <Image 
-                source={{ uri: m.src }} 
-                style={{ width: "100%", height: "100%" }} 
-                resizeMode="cover" 
-              />
-              {isVideo && (
-                <View style={{ 
-                  position: "absolute", 
-                  right: 8, 
-                  top: 8, 
-                  width: 26, 
-                  height: 26, 
-                  borderRadius: 13, 
-                  backgroundColor: "rgba(0,0,0,0.45)", 
-                  alignItems: "center", 
-                  justifyContent: "center" 
-                }}>
-                  <Ionicons name="play" size={14} color="#fff" />
-                </View>
-              )}
-              {isFavorite && (
-                <View style={{ 
-                  position: "absolute", 
-                  right: 8, 
-                  top: 8, 
-                  width: 26, 
-                  height: 26, 
-                  borderRadius: 13, 
-                  backgroundColor: "rgba(255, 59, 48, 0.9)", 
-                  alignItems: "center", 
-                  justifyContent: "center" 
-                }}>
-                  <Ionicons name="heart" size={14} color="#fff" />
-                </View>
-              )}
-              {!!m.title && (
-                <View style={{ 
-                  position: "absolute", 
-                  left: 8, 
-                  bottom: 8, 
-                  backgroundColor: "rgba(0,0,0,0.35)", 
-                  paddingHorizontal: 8, 
-                  paddingVertical: 4, 
-                  borderRadius: RADIUS.sm 
-                }}>
-                  <Text style={{ color: "#fff", ...TYPOGRAPHY.sm }}>{m.title}</Text>
-                </View>
-              )}
-            </View>
-          </TouchableOpacity>
+          <MemoryGridThumb
+            key={m.id}
+            uri={m.src}
+            itemWidth={itemWidth}
+            gap={gap}
+            isLastInRow={isLastInRow}
+            colors={colors}
+            onPress={() => onPressItem && onPressItem(index)}
+            isVideo={isVideo}
+            isFavorite={isFavorite}
+          />
         );
       })}
     </View>
@@ -250,8 +298,9 @@ const LightboxModal = ({
 
   return (
     <Modal visible={visible} animationType="fade" transparent={false} onRequestClose={onClose}>
-      <View style={{ flex: 1, backgroundColor: "#000", justifyContent: "center" }}>
+      <View style={{ flex: 1, backgroundColor: "#000" }}>
         <StatusBar barStyle="light-content" backgroundColor="#000" />
+        
         {/* Header with Close and Actions */}
         <View style={{ 
           position: "absolute", 
@@ -260,107 +309,152 @@ const LightboxModal = ({
           right: 0, 
           flexDirection: "row", 
           justifyContent: "space-between", 
-          paddingHorizontal: 20,
-          paddingTop: 40,
-          paddingBottom: SPACING.sm,
-          backgroundColor: "rgba(0,0,0,0.35)",
+          alignItems: "center",
+          paddingHorizontal: 16,
+          paddingTop: 50,
+          paddingBottom: 12,
           zIndex: 10
         }}>
-          <TouchableOpacity onPress={onClose}>
-            <Ionicons name="close" size={24} color="#fff" />
+          <TouchableOpacity 
+            onPress={onClose}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              backgroundColor: "rgba(255,255,255,0.15)",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+          >
+            <Ionicons name="close" size={20} color="#fff" />
           </TouchableOpacity>
           
-          <View style={{ flexDirection: "row", alignItems: "center" }}>
-            {/* Favorite Button */}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <TouchableOpacity 
               onPress={() => onToggleFavorite(item.id)}
-              style={{ marginRight: SPACING.md }}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 18,
+                backgroundColor: item.isFavorite ? "rgba(255,59,48,0.9)" : "rgba(255,255,255,0.15)",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
             >
               <Ionicons 
                 name={item.isFavorite ? "heart" : "heart-outline"} 
-                size={24} 
-                color={item.isFavorite ? "#FF3B30" : "#fff"} 
+                size={18} 
+                color="#fff" 
               />
             </TouchableOpacity>
             
-            {/* More Options (Edit/Archive/Delete) */}
-            <TouchableOpacity onPress={() => onOpenActions(item)}>
-              <Ionicons name="ellipsis-horizontal" size={24} color="#fff" />
+            <TouchableOpacity 
+              onPress={() => onOpenActions(item)}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={{
+                width: 36,
+                height: 36,
+                borderRadius: 18,
+                backgroundColor: "rgba(255,255,255,0.15)",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Ionicons name="ellipsis-horizontal" size={18} color="#fff" />
             </TouchableOpacity>
           </View>
         </View>
 
+        {/* Image / video (pinch-zoom for photos) */}
         {!!item && (
           <View style={{ flex: 1, justifyContent: "center" }}>
-            <Image 
-              source={{ uri: item.src }} 
-              style={{ width: "100%", height: "100%" }} 
-              resizeMode="contain" 
-            />
+            {item.type === "photo" ? (
+              <PinchZoomableImage uri={item.src} resetKey={item.id} />
+            ) : (
+              <Image
+                source={{ uri: item.src }}
+                style={{ width: "100%", height: "100%" }}
+                resizeMode="contain"
+              />
+            )}
           </View>
         )}
 
-        {/* Navigation Arrows */}
-        <View style={{ 
-          position: "absolute", 
-          left: 0, 
-          right: 0, 
-          bottom: 24, 
-          flexDirection: "row", 
-          justifyContent: "space-between", 
-          paddingHorizontal: 20 
-        }}>
+        {/* Left Arrow - Vertically Centered */}
+        {canPrev && (
           <TouchableOpacity 
-            disabled={!canPrev} 
             onPress={() => { 
-              if (canPrev) { 
-                const ni = i - 1; 
-                setI(ni); 
-                onChangeIndex(ni); 
-              } 
+              const ni = i - 1; 
+              setI(ni); 
+              onChangeIndex(ni); 
             }}
+            hitSlop={{ top: 20, bottom: 20, left: 10, right: 10 }}
             style={{
-              width: 44,
-              height: 44,
-              borderRadius: 22,
-              backgroundColor: "rgba(0,0,0,0.4)",
+              position: "absolute",
+              left: 12,
+              top: "50%",
+              marginTop: -24,
+              width: 48,
+              height: 48,
+              borderRadius: 24,
+              backgroundColor: "rgba(255,255,255,0.12)",
               alignItems: "center",
               justifyContent: "center",
-              opacity: canPrev ? 1 : 0.4
             }}
           >
-            <Ionicons 
-              name="chevron-back" 
-              size={28} 
-              color="#fff"
-            />
+            <Ionicons name="chevron-back" size={24} color="#fff" />
           </TouchableOpacity>
+        )}
+
+        {/* Right Arrow - Vertically Centered */}
+        {canNext && (
           <TouchableOpacity 
-            disabled={!canNext} 
             onPress={() => { 
-              if (canNext) { 
-                const ni = i + 1; 
-                setI(ni); 
-                onChangeIndex(ni); 
-              } 
+              const ni = i + 1; 
+              setI(ni); 
+              onChangeIndex(ni); 
             }}
+            hitSlop={{ top: 20, bottom: 20, left: 10, right: 10 }}
             style={{
-              width: 44,
-              height: 44,
-              borderRadius: 22,
-              backgroundColor: "rgba(0,0,0,0.4)",
+              position: "absolute",
+              right: 12,
+              top: "50%",
+              marginTop: -24,
+              width: 48,
+              height: 48,
+              borderRadius: 24,
+              backgroundColor: "rgba(255,255,255,0.12)",
               alignItems: "center",
               justifyContent: "center",
-              opacity: canNext ? 1 : 0.4
             }}
           >
-            <Ionicons 
-              name="chevron-forward" 
-              size={28} 
-              color="#fff"
-            />
+            <Ionicons name="chevron-forward" size={24} color="#fff" />
           </TouchableOpacity>
-        </View>
+        )}
+
+        {/* Photo Counter */}
+        {items.length > 1 && (
+          <View style={{
+            position: "absolute",
+            bottom: 40,
+            left: 0,
+            right: 0,
+            alignItems: "center",
+          }}>
+            <View style={{
+              backgroundColor: "rgba(0,0,0,0.5)",
+              paddingHorizontal: 12,
+              paddingVertical: 6,
+              borderRadius: 14,
+            }}>
+              <Text style={{ color: "#fff", fontSize: 13, fontWeight: "600" }}>
+                {i + 1} / {items.length}
+              </Text>
+            </View>
+          </View>
+        )}
       </View>
     </Modal>
   );
@@ -386,6 +480,8 @@ export default function MemoriesScreen() {
   const [showMediaPicker, setShowMediaPicker] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<{ uri: string; type: 'photo' | 'video'; width: number; height: number } | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [editingMemory, setEditingMemory] = useState<MemoryItem | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editNote, setEditNote] = useState("");
@@ -393,6 +489,26 @@ export default function MemoriesScreen() {
   const [actionSheetVisible, setActionSheetVisible] = useState(false);
   const [actionSheetOptions, setActionSheetOptions] = useState<ActionSheetOption[]>([]);
   const [actionSheetTitle, setActionSheetTitle] = useState<string | undefined>(undefined);
+
+  const [headerCompact, setHeaderCompact] = useState(false);
+  const headerCompactRef = useRef(false);
+  const SCROLL_DOWN_THRESHOLD = 50;
+  const SCROLL_UP_THRESHOLD = 35;
+  const handleMemoriesScroll = useCallback((event: any) => {
+    const y = event.nativeEvent?.contentOffset?.y ?? 0;
+    if (y <= 0) {
+      if (headerCompactRef.current) {
+        headerCompactRef.current = false;
+        setHeaderCompact(false);
+      }
+    } else {
+      const nextCompact = y >= SCROLL_DOWN_THRESHOLD ? true : y <= SCROLL_UP_THRESHOLD ? false : headerCompactRef.current;
+      if (nextCompact !== headerCompactRef.current) {
+        headerCompactRef.current = nextCompact;
+        setHeaderCompact(nextCompact);
+      }
+    }
+  }, []);
 
   // Filter memories based on selected filter
   const filtered = useMemo(() => {
@@ -408,42 +524,57 @@ export default function MemoriesScreen() {
     return filteredMemories;
   }, [memories, filter, activePetId]);
 
-  const byMonth = useMemo(() => {
-    const map: Record<string, MemoryItem[]> = {};
-    filtered.forEach(m => { (map[m.month] ||= []).push(m); });
-    
-    // Sort months in descending order (most recent first)
-    const sortedMonths = Object.keys(map).sort((a, b) => {
-      const dateA = new Date(a);
-      const dateB = new Date(b);
-      return dateB.getTime() - dateA.getTime();
-    });
-    
-    return sortedMonths.map(month => ({ month, items: map[month] }));
+  const sortedMemories = useMemo(() => {
+    return [...filtered].sort((a, b) => b.uploadedAt - a.uploadedAt);
   }, [filtered]);
 
-  const handleMediaSelected = (media: { uri: string; type: 'photo' | 'video'; width: number; height: number }) => {
-    // Store selected media and show details modal
-    setSelectedMedia(media);
+  const handleMediaSelected = async (media: { uri: string; type: 'photo' | 'video'; width: number; height: number }) => {
+    // Compress image before showing details modal (videos don't need compression)
+    if (media.type === 'photo') {
+      setIsProcessing(true);
+      try {
+        const compressedUri = await compressImage(media.uri, {
+          maxWidth: 1080,
+          maxHeight: 1080,
+          quality: 0.75,
+        });
+        setSelectedMedia({ ...media, uri: compressedUri });
+      } catch (error) {
+        console.error('MemoriesScreen: Failed to compress image', error);
+        setSelectedMedia(media); // Use original if compression fails
+      } finally {
+        setIsProcessing(false);
+      }
+    } else {
+      setSelectedMedia(media);
+    }
     setShowDetailsModal(true);
   };
 
-  const handleSaveMemoryDetails = ({ title, note }: { title: string; note?: string }) => {
-    if (!selectedMedia) return;
+  const handleSaveMemoryDetails = async ({ title, note }: { title: string; note?: string }) => {
+    if (!selectedMedia || isSaving) return;
     
-    addMemory({
-      type: selectedMedia.type,
-      src: selectedMedia.uri,
-      w: selectedMedia.width,
-      h: selectedMedia.height,
-      title: title,
-      note: note,
-      petId: activePetId || undefined,
-    });
-    
-    setShowDetailsModal(false);
-    setSelectedMedia(null);
-    Alert.alert('Success', 'Memory added successfully!');
+    setIsSaving(true);
+    try {
+      await addMemory({
+        type: selectedMedia.type,
+        src: selectedMedia.uri,
+        w: selectedMedia.width,
+        h: selectedMedia.height,
+        title: title,
+        note: note,
+        petId: activePetId || undefined,
+      });
+      
+      setShowDetailsModal(false);
+      setSelectedMedia(null);
+      Alert.alert('Success', 'Memory added successfully!');
+    } catch (error) {
+      console.error('MemoriesScreen: Failed to save memory', error);
+      Alert.alert('Error', 'Failed to save memory. Please try again.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const handleDelete = (id: string) => {
@@ -527,55 +658,38 @@ export default function MemoriesScreen() {
         title="Memories"
         actionIcon="paw"
         onActionPress={() => setShowMediaPicker(true)}
-        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        centerTitle={headerCompact}
+        titleStyle={headerCompact ? { ...TYPOGRAPHY.sm, fontWeight: "400" } : { ...TYPOGRAPHY.base, fontWeight: "400" }}
         paddingTop={SPACING.lg}
-        paddingBottom={SPACING.lg}
+        paddingBottom={headerCompact ? SPACING.sm : SPACING.lg}
+        insetSeparator
       />
       
       <ScrollView 
-        contentContainerStyle={{ paddingBottom: 140 }} 
+        contentContainerStyle={{ paddingBottom: 140, paddingTop: SPACING.lg }} 
         showsVerticalScrollIndicator={false} 
         bounces
+        onScroll={handleMemoriesScroll}
+        scrollEventThrottle={0}
       >
-        <View style={{ 
-          paddingHorizontal: SPACING.lg, 
-          paddingTop: SPACING.lg, 
-          paddingBottom: SPACING.sm 
-        }}>
-          <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>
+        <View style={{ marginHorizontal: SPACING.lg, marginBottom: SPACING.md }}>
+          <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginBottom: SPACING.sm }}>
             Relive {petNamePossessive} best moments 🐶
           </Text>
-        </View>
-        
-        <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.md }}>
           <FilterSegment value={filter} onChange={setFilter} />
         </View>
-        
-        {byMonth.length > 0 ? (
-          byMonth.map(({ month, items }) => (
-            <View key={month} style={{ 
-              paddingHorizontal: SPACING.lg, 
-              marginBottom: SPACING.lg 
-            }}>
-              <Text style={{ 
-                ...TYPOGRAPHY.xl, 
-                fontWeight: "800", 
-                color: colors.text, 
-                marginBottom: SPACING.sm 
-              }}>
-                {month}
-              </Text>
-              <UniformGrid 
-                items={items} 
-                columns={3} 
-                gap={6} 
-                onPressItem={(index) => {
-                  const currentItems = filtered.filter(m => m.month === month);
-                  setLightbox({ visible: true, index, items: currentItems });
-                }} 
-              />
-            </View>
-          ))
+
+        {sortedMemories.length > 0 ? (
+          <View style={{ paddingHorizontal: SPACING.lg }}>
+            <UniformGrid 
+              items={sortedMemories} 
+              columns={3} 
+              gap={3} 
+              onPressItem={(index) => {
+                setLightbox({ visible: true, index, items: sortedMemories });
+              }} 
+            />
+          </View>
         ) : (
           <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.xl }}>
             <EmptyState
@@ -678,6 +792,32 @@ export default function MemoriesScreen() {
         options={actionSheetOptions}
         onClose={() => setActionSheetVisible(false)}
       />
+
+      {/* Processing Overlay */}
+      <Modal visible={isProcessing || isSaving} transparent animationType="fade">
+        <View style={{
+          flex: 1,
+          backgroundColor: "rgba(0, 0, 0, 0.7)",
+          justifyContent: "center",
+          alignItems: "center",
+        }}>
+          <View style={{
+            backgroundColor: colors.card,
+            borderRadius: RADIUS.xl,
+            padding: SPACING.xl,
+            alignItems: "center",
+            ...SHADOWS.lg,
+          }}>
+            <ActivityIndicator size="large" color={colors.accent} />
+            <Text style={{ ...TYPOGRAPHY.base, color: colors.text, marginTop: SPACING.md, fontWeight: "600" }}>
+              {isProcessing ? "Processing photo..." : "Saving memory..."}
+            </Text>
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.xs }}>
+              Please wait
+            </Text>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

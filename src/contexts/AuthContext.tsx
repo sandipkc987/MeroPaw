@@ -1,10 +1,14 @@
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from "react";
-import { Platform } from "react-native";
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { Platform, AppState } from "react-native";
+import * as WebBrowser from "expo-web-browser";
+import * as AuthSession from "expo-auth-session";
 import storage from "@src/utils/storage";
 import { getSupabaseClient } from "@src/services/supabaseClient";
 import { insertNotification } from "@src/services/supabaseData";
 import { registerPushToken, subscribeToTokenRefresh } from "@src/services/pushNotifications";
 import { isAdminEmail } from "@src/utils/admin";
+
+WebBrowser.maybeCompleteAuthSession();
 
 interface StoredPhotoDetail {
   uri?: string;
@@ -49,6 +53,7 @@ interface AuthContextType {
   hasCompletedOnboarding: boolean;
   isAdmin: boolean;
   login: (email: string, password: string) => Promise<void>;
+  signInWithGoogle: () => Promise<void>;
   requestEmailOtp: (email: string) => Promise<void>;
   verifyEmailOtp: (email: string, code: string, password: string) => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
@@ -244,6 +249,121 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       console.log("AuthContext.login: Setting isLoading = false");
       setIsLoading(false);
+    }
+  };
+
+  const signInWithGoogle = async () => {
+    console.log("AuthContext.signInWithGoogle: Starting Google sign-in");
+    setIsLoading(true);
+
+    try {
+      const supabase = getSupabaseClient();
+      const isWeb = Platform.OS === "web";
+      
+      // Use different redirect URLs for web vs native
+      const redirectUrl = isWeb 
+        ? AuthSession.makeRedirectUri() 
+        : "meropaw://google-auth";
+      console.log("AuthContext.signInWithGoogle: Redirect URL:", redirectUrl, "Platform:", Platform.OS);
+
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: redirectUrl,
+          skipBrowserRedirect: true,
+        },
+      });
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      if (!data.url) {
+        throw new Error("No OAuth URL returned");
+      }
+
+      console.log("AuthContext.signInWithGoogle: OAuth URL:", data.url);
+
+      // Use in-app auth session on all platforms (ASWebAuthSession on iOS, Chrome Custom Tabs on Android, popup on web)
+      // This keeps the user in-app instead of redirecting to the external browser — like Nextdoor's flow
+      console.log("AuthContext.signInWithGoogle: Opening in-app auth session");
+      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectUrl);
+      await handleOAuthResult(result, supabase);
+    } catch (error) {
+      console.error("Google sign-in failed:", error);
+      setIsLoading(false);
+      throw error;
+    }
+  };
+
+  const handleOAuthResult = async (result: WebBrowser.WebBrowserAuthSessionResult, supabase: any) => {
+    if (result.type === "success" && result.url) {
+      console.log("AuthContext.signInWithGoogle: Browser returned successfully");
+      await processOAuthCallback(result.url, supabase);
+    } else if (result.type === "cancel") {
+      console.log("AuthContext.signInWithGoogle: User cancelled");
+      setIsLoading(false);
+    } else {
+      console.log("AuthContext.signInWithGoogle: Auth session result:", result.type);
+      setIsLoading(false);
+    }
+  };
+
+  const processOAuthCallback = async (callbackUrl: string, supabase: any) => {
+    console.log("AuthContext.signInWithGoogle: Processing callback URL:", callbackUrl);
+    
+    const url = new URL(callbackUrl);
+    let accessToken: string | null = null;
+    let refreshToken: string | null = null;
+    
+    // Try hash fragment first (most common for OAuth)
+    if (url.hash) {
+      const hashParams = new URLSearchParams(url.hash.substring(1));
+      accessToken = hashParams.get("access_token");
+      refreshToken = hashParams.get("refresh_token");
+    }
+    
+    // Fall back to query params
+    if (!accessToken) {
+      accessToken = url.searchParams.get("access_token");
+      refreshToken = url.searchParams.get("refresh_token");
+    }
+
+    if (accessToken && refreshToken) {
+      const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      });
+
+      if (sessionError || !sessionData.user) {
+        setIsLoading(false);
+        throw new Error(sessionError?.message || "Failed to set session");
+      }
+
+      const onboardingFromSupabase = sessionData.user.user_metadata?.onboarding_complete === true;
+      const storedUser = await storage.getItem("kasper_user");
+      const parsedUser = storedUser ? JSON.parse(storedUser) : null;
+
+      const newUser: User = {
+        id: sessionData.user.id,
+        email: sessionData.user.email || "",
+        petName: parsedUser?.petName || "",
+        profileDetails: parsedUser?.profileDetails || {},
+      };
+
+      setUser(newUser);
+      await storage.setItem("kasper_user", JSON.stringify(newUser));
+
+      const onboardingComplete = await storage.getItem("kasper_onboarding_complete");
+      setHasCompletedOnboarding(onboardingFromSupabase || onboardingComplete === "true");
+      registerDevice(newUser.id);
+      setIsLoading(false);
+
+      console.log("AuthContext.signInWithGoogle: Sign-in successful", { userId: newUser.id });
+    } else {
+      console.error("AuthContext.signInWithGoogle: No tokens found in URL", callbackUrl);
+      setIsLoading(false);
+      throw new Error("No tokens in OAuth response");
     }
   };
 
@@ -542,6 +662,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     hasCompletedOnboarding,
     isAdmin: isAdminEmail(user?.email),
     login,
+    signInWithGoogle,
     requestEmailOtp,
     verifyEmailOtp,
     resetPassword,

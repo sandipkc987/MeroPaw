@@ -38,6 +38,8 @@ const SECTION_ENDERS = [
 ];
 
 const EXTRACTOR_VERSION = "2026-02-04-instrumented-v1";
+const GEMINI_LLM_MODEL = "gemini-2.5-flash";
+const LLM_FALLBACK_TRIGGER = 2;
 
 function normalizeText(input: string): string {
   return input
@@ -104,6 +106,7 @@ function getMissingFields(payload: Record<string, any>) {
   if (!payload?.respiratoryRate?.value) missing.push("respiratoryRate");
   if (!payload?.attitude?.value) missing.push("attitude");
   if (!payload?.visitDate?.value) missing.push("visitDate");
+  if (!payload?.visitTitle?.value) missing.push("visitTitle");
   if (!payload?.doctorName?.value) missing.push("doctorName");
   if (!payload?.clinicName?.value) missing.push("clinicName");
   return missing;
@@ -144,6 +147,84 @@ function findUnknownLabels(text: string) {
     results.push({ label, snippet: text.slice(start, end) });
   }
   return results.slice(0, 20);
+}
+
+async function llmExtractMissing(
+  rawText: string,
+  missingFields: string[],
+  geminiApiKey: string
+): Promise<Record<string, any>> {
+  if (missingFields.length === 0) return {};
+  const text = rawText.trim().slice(0, 2000);
+  const fieldsList = missingFields.join(", ");
+  const prompt = `Extract these veterinary clinical summary fields from the text below. Return ONLY a valid JSON object with keys: ${fieldsList}. Use null for any field not found. Rules: weight in lb (number), heartRate (number 40-240), respiratoryRate (number 5-100), attitude one of BAR|QAR|L|D, visitDate as YYYY-MM-DD, visitTitle a short descriptive title for the visit (e.g. "Canine Annual Wellness", "Rabies vaccination", "Sick visit - ear infection"), doctorName and clinicName as strings. No markdown, no code fences. Text:\n\n${text}`;
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_LLM_MODEL}:generateContent?key=${geminiApiKey}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 1024 },
+      }),
+    }
+  );
+  if (!res.ok) return {};
+  const data = await res.json().catch(() => ({}));
+  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+  if (!raw) return {};
+  let jsonStr = raw.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "").trim();
+  try {
+    const parsed = JSON.parse(jsonStr);
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, any> = {};
+    if (missingFields.includes("weight") && parsed.weight != null) {
+      const v = Number(parsed.weight);
+      if (Number.isFinite(v) && isPlausibleWeightLb(v)) {
+        out.weight = { value: Number(v.toFixed(2)), unit: "LB", confidence: 0.7 };
+      }
+    }
+    if (missingFields.includes("heartRate") && parsed.heartRate != null) {
+      const v = parseInt(String(parsed.heartRate), 10);
+      if (Number.isFinite(v) && isPlausibleHeartRate(v)) {
+        out.heartRate = { value: v, unit: "bpm", confidence: 0.7 };
+      }
+    }
+    if (missingFields.includes("respiratoryRate") && parsed.respiratoryRate != null) {
+      const v = parseInt(String(parsed.respiratoryRate), 10);
+      if (Number.isFinite(v) && isPlausibleRespRate(v)) {
+        out.respiratoryRate = { value: v, unit: "bpm", confidence: 0.7 };
+      }
+    }
+    if (missingFields.includes("attitude") && parsed.attitude != null) {
+      const v = String(parsed.attitude).trim().toUpperCase();
+      if (["BAR", "QAR", "L", "D"].includes(v)) {
+        out.attitude = { value: v, confidence: 0.7 };
+      }
+    }
+    if (missingFields.includes("visitDate") && parsed.visitDate) {
+      const v = String(parsed.visitDate).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        out.visitDate = { value: v, confidence: 0.7 };
+      }
+    }
+    if (missingFields.includes("doctorName") && parsed.doctorName) {
+      const v = String(parsed.doctorName).trim();
+      if (v.length >= 2) out.doctorName = { value: v, confidence: 0.7 };
+    }
+    if (missingFields.includes("clinicName") && parsed.clinicName) {
+      const v = String(parsed.clinicName).trim();
+      if (v.length >= 2) out.clinicName = { value: v, confidence: 0.7 };
+    }
+    if (missingFields.includes("visitTitle") && parsed.visitTitle) {
+      const v = String(parsed.visitTitle).trim();
+      if (v.length >= 2 && v.length <= 120) out.visitTitle = { value: v, confidence: 0.7 };
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 async function logExtractionDebug(params: {
@@ -559,6 +640,98 @@ function extractVisitType(text: string, inSection: boolean) {
   return undefined;
 }
 
+function normalizeTitleCase(value: string) {
+  return value
+    .toLowerCase()
+    .split(" ")
+    .map((word) => (word ? word[0].toUpperCase() + word.slice(1) : ""))
+    .join(" ")
+    .trim();
+}
+
+function extractVisitTitle(text: string, header: string) {
+  const results: Candidate[] = [];
+  const headerMatch = header.match(/CLINICAL\s+SUMMARY\s+FOR\s+([A-Z0-9\s'\\-]+)/i);
+  if (headerMatch?.[1]) {
+    const name = headerMatch[1].trim();
+    if (name) {
+      results.push({
+        value: `Clinical Summary for ${normalizeTitleCase(name)}`,
+        confidence: scoreConfidence(0.7, 0.05, 0),
+        source: "header",
+      });
+    }
+  }
+
+  const visitTypeMatch = text.match(/\b(CANINE|FELINE)\s+(ANNUAL|WELLNESS|VACCINATION|SICK)\b/i);
+  if (visitTypeMatch) {
+    results.push({
+      value: normalizeTitleCase(`${visitTypeMatch[1]} ${visitTypeMatch[2]}`),
+      confidence: scoreConfidence(0.5, 0.05, 0),
+      source: "document",
+    });
+  }
+
+  return results;
+}
+
+function normalizeDate(raw: string) {
+  const parts = raw.split(/[\/\-]/);
+  const month = parts[0]?.padStart(2, "0");
+  const day = parts[1]?.padStart(2, "0");
+  const year = parts[2]?.length === 2 ? `20${parts[2]}` : parts[2];
+  return month && day && year ? `${year}-${month}-${day}` : raw;
+}
+
+function cleanVaccinationName(raw: string) {
+  return raw
+    .replace(/\s+/g, " ")
+    .replace(/\s+VACCINE\s*$/i, "")
+    .trim();
+}
+
+function extractVaccinations(text: string, defaults: { visitDate?: string } = {}) {
+  const results: Array<{ name: string; date?: string; dueDate?: string }> = [];
+  const seen = new Set<string>();
+  const sections = text.split(/\bVaccination\b/i);
+
+  const nameRegex = /Gave\s+1\s*x\s+(.+?)(?:\s+Booster\s+Due|\s+LOT|\s+Location\s+Administered|\s+Status:|\s+Reference:|$)/i;
+  const boosterRegex = /Booster\s+Due\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i;
+
+  const isValidVaxName = (name: string) => {
+    const normalized = name.toUpperCase();
+    if (normalized.length < 3) return false;
+    if (/(HEARTWORM|DIAGNOSTIC|TEST|RAPID|HWT)/i.test(normalized)) return false;
+    if (normalized.includes("VACCINE")) return true;
+    return /(RABIES|LEPTO|LEPTOSPIROSIS|BORDETELLA|DA2PP|DAPP|DHPP|CIV|INFLUENZA)/i.test(normalized);
+  };
+
+  for (let i = 1; i < sections.length; i += 1) {
+    const section = sections[i];
+    const nameMatch = nameRegex.exec(section);
+    if (!nameMatch) continue;
+    const name = cleanVaccinationName(nameMatch[1] || "");
+    if (!name || !isValidVaxName(name)) continue;
+    const boosterMatch = boosterRegex.exec(section);
+    const dueDate = boosterMatch?.[1] ? normalizeDate(boosterMatch[1]) : undefined;
+    results.push({
+      name,
+      date: defaults.visitDate,
+      dueDate,
+    });
+  }
+
+  const deduped: Array<{ name: string; date?: string; dueDate?: string }> = [];
+  for (const entry of results) {
+    const key = `${entry.name}|${entry.date || ""}|${entry.dueDate || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(entry);
+  }
+
+  return deduped;
+}
+
 function pickBest(candidates: any[]): any | undefined {
   if (!candidates || candidates.length === 0) return undefined;
   return candidates.sort((a, b) => b.confidence - a.confidence)[0];
@@ -694,6 +867,9 @@ Deno.serve(async (req) => {
       ...extractVisitDate(header, "header"),
       ...extractVisitDate(normalized, "fulltext"),
     ]);
+    const visitTitle = pickBestStrict([
+      ...extractVisitTitle(normalized, header),
+    ]);
     const visitType = extractVisitType(normalized, !!healthSection);
     const doctorName = pickBestStrict([
       ...extractDoctor(header, "header"),
@@ -705,22 +881,51 @@ Deno.serve(async (req) => {
       ...extractClinic(normalized, "fulltext"),
     ]);
 
+    const vaccinations = extractVaccinations(rawText, { visitDate: visitDate?.value });
+
+    let extractedPayload = {
+      weight,
+      heartRate,
+      respiratoryRate,
+      attitude,
+      visitDate,
+      visitTitle,
+      visitType,
+      doctorName,
+      clinicName,
+      vaccinations,
+    };
+    let missingFields = getMissingFields(extractedPayload);
+
+    if (missingFields.length >= LLM_FALLBACK_TRIGGER) {
+      const geminiKey = Deno.env.get("GEMINI_API_KEY");
+      if (geminiKey) {
+        try {
+          const llmFills = await llmExtractMissing(rawText, missingFields, geminiKey);
+          if (Object.keys(llmFills).length > 0) {
+            if (llmFills.weight && !extractedPayload.weight) extractedPayload = { ...extractedPayload, weight: llmFills.weight };
+            if (llmFills.heartRate && !extractedPayload.heartRate) extractedPayload = { ...extractedPayload, heartRate: llmFills.heartRate };
+            if (llmFills.respiratoryRate && !extractedPayload.respiratoryRate) extractedPayload = { ...extractedPayload, respiratoryRate: llmFills.respiratoryRate };
+            if (llmFills.attitude && !extractedPayload.attitude) extractedPayload = { ...extractedPayload, attitude: llmFills.attitude };
+            if (llmFills.visitDate && !extractedPayload.visitDate) extractedPayload = { ...extractedPayload, visitDate: llmFills.visitDate };
+            if (llmFills.doctorName && !extractedPayload.doctorName) extractedPayload = { ...extractedPayload, doctorName: llmFills.doctorName };
+            if (llmFills.clinicName && !extractedPayload.clinicName) extractedPayload = { ...extractedPayload, clinicName: llmFills.clinicName };
+            if (llmFills.visitTitle && !extractedPayload.visitTitle) extractedPayload = { ...extractedPayload, visitTitle: llmFills.visitTitle };
+            missingFields = getMissingFields(extractedPayload);
+            console.log("parse-clinical-summary: LLM fallback filled", Object.keys(llmFills));
+          }
+        } catch (err) {
+          console.warn("parse-clinical-summary: LLM fallback failed", err);
+        }
+      }
+    }
+
     const payload = {
       vendor,
       usedOcr,
       textLength,
-      normalized: {
-        weight,
-        heartRate,
-        respiratoryRate,
-        attitude,
-        visitDate,
-        visitType,
-        doctorName,
-        clinicName,
-      },
+      normalized: extractedPayload,
     };
-    const missingFields = getMissingFields(payload.normalized);
     const headerPreview = buildHeaderPreview(header);
     const unknownLabels = findUnknownLabels(normalized);
     await logExtractionDebug({

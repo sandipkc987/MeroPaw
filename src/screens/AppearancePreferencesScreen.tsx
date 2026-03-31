@@ -1,19 +1,29 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { View, ScrollView } from "react-native";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { View, ScrollView, Appearance, Text } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Card, Row, Divider, SectionTitle } from "@src/components/UI";
 import Select from "@src/components/Select";
-import { SPACING } from "@src/theme";
+import { SPACING, TYPOGRAPHY } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import ScreenHeader from "@src/components/ScreenHeader";
 import { useNavigation } from "@src/contexts/NavigationContext";
 
 const SETTINGS_KEY = "@kasper_settings";
 
+function getResolvedTheme(mode: "light" | "dark" | "system"): "light" | "dark" {
+  if (mode === "system") {
+    return Appearance.getColorScheme() === "dark" ? "dark" : "light";
+  }
+  return mode;
+}
+
 export default function AppearancePreferencesScreen() {
-  const { themeMode, setTheme: setAppTheme } = useTheme();
+  const { themeMode, isDark, setTheme: setAppTheme, colors } = useTheme();
   const { goBack, canGoBack, setActiveScreen, setActiveTab } = useNavigation();
-  const [theme, setTheme] = useState(themeMode === "system" ? "light" : themeMode);
+  // Use context's resolved theme (what's on screen) so we never flip on open, even when storage/Appearance race
+  const [theme, setTheme] = useState<"light" | "dark">(() =>
+    themeMode === "system" ? (isDark ? "dark" : "light") : themeMode
+  );
   const [language, setLanguage] = useState("en");
 
   const loadSettings = useCallback(async () => {
@@ -21,7 +31,9 @@ export default function AppearancePreferencesScreen() {
       const stored = await AsyncStorage.getItem(SETTINGS_KEY);
       if (stored) {
         const settings = JSON.parse(stored);
-        if (settings.theme !== undefined) setTheme(settings.theme);
+        if (settings.theme !== undefined) {
+          setTheme(getResolvedTheme(settings.theme));
+        }
         if (settings.language !== undefined) setLanguage(settings.language);
       }
     } catch (error) {
@@ -52,7 +64,12 @@ export default function AppearancePreferencesScreen() {
     return () => clearTimeout(timer);
   }, [saveSettings]);
 
+  const isInitialMount = useRef(true);
   useEffect(() => {
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
     setAppTheme(theme as "light" | "dark");
   }, [theme, setAppTheme]);
 
@@ -98,21 +115,9 @@ export default function AppearancePreferencesScreen() {
           <Row
             icon="language-outline"
             label="Language"
-            hint="Choose your preferred language"
+            hint="English"
             control={
-              <Select
-                value={language}
-                onChange={setLanguage}
-                options={[
-                  { label: "English", value: "en" },
-                  { label: "Español", value: "es" },
-                  { label: "नेपाली (Nepali)", value: "ne" },
-                  { label: "Français", value: "fr" },
-                ]}
-                width={180}
-                modalTitle="Language"
-                modalIcon="language-outline"
-              />
+              <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted }}>English</Text>
             }
           />
         </Card>

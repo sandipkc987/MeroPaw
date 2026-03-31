@@ -5,15 +5,20 @@ import {
   Image,
   FlatList,
   Pressable,
+  TouchableOpacity,
   StyleSheet,
   Animated,
-  Dimensions
+  useWindowDimensions,
+  LayoutChangeEvent,
+  PixelRatio,
 } from "react-native";
 import { SPACING, RADIUS, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
 import { LinearGradient } from "expo-linear-gradient";
 import { Ionicons } from "@expo/vector-icons";
 import { useMemories } from "@src/contexts/MemoriesContext";
+
+const TABLET_BREAKPOINT = 768;
 
 interface HighlightImage {
   id: string;
@@ -30,15 +35,15 @@ interface HighlightsCarouselProps {
   peekRightPercent?: number;
 }
 
-const { width: screenWidth } = Dimensions.get('window');
-
 export default function HighlightsCarousel({
   onItemPress,
   autoIntervalMs = 6000,
   peekRightPercent = 10
 }: HighlightsCarouselProps) {
+  const { width: screenWidth } = useWindowDimensions();
   const { colors } = useTheme();
   const { getIntelligentHighlights } = useMemories();
+  const [containerWidth, setContainerWidth] = useState(0);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
@@ -48,10 +53,18 @@ export default function HighlightsCarousel({
 
   const highlightImages = useMemo(() => getIntelligentHighlights(), [getIntelligentHighlights]);
 
-  // Calculate slide width with peek - make peek smaller for better visibility
-  const peekPercent = Math.min(peekRightPercent, 8); // Cap at 8% for better visibility
-  const slideWidth = screenWidth * (1 - peekPercent / 100);
-  const peekWidth = screenWidth * (peekPercent / 100);
+  const measuredWidth = containerWidth > 0 ? containerWidth : screenWidth;
+  const isTablet = measuredWidth >= TABLET_BREAKPOINT;
+  const carouselHeight = isTablet ? 360 : 260;
+  const contentPaddingH = isTablet ? SPACING.lg : SPACING.md;
+
+  // Edge-to-edge full-width slides: use measured container width for iOS accuracy
+  const slideWidth = PixelRatio.roundToNearestPixel(measuredWidth);
+
+  const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width } = e.nativeEvent.layout;
+    if (width > 0) setContainerWidth(width);
+  }, []);
 
   // Auto-advance functionality
   useEffect(() => {
@@ -59,8 +72,8 @@ export default function HighlightsCarousel({
       autoplayTimer.current = setTimeout(() => {
         const nextIndex = (currentIndex + 1) % highlightImages.length;
         setCurrentIndex(nextIndex);
-        flatListRef.current?.scrollToIndex({
-          index: nextIndex,
+        flatListRef.current?.scrollToOffset({
+          offset: nextIndex * slideWidth,
           animated: true
         });
       }, autoIntervalMs);
@@ -94,6 +107,12 @@ export default function HighlightsCarousel({
     }
   };
 
+  const scrollToIndex = (index: number) => {
+    const idx = Math.max(0, Math.min(index, highlightImages.length - 1));
+    setCurrentIndex(idx);
+    flatListRef.current?.scrollToOffset({ offset: idx * slideWidth, animated: true });
+  };
+
   const handlePress = (item: HighlightImage) => {
     onItemPress?.(item);
   };
@@ -106,7 +125,7 @@ export default function HighlightsCarousel({
     <Pressable
       style={[
         styles.slide,
-        { width: slideWidth }
+        { width: slideWidth, height: carouselHeight }
       ]}
       onPress={() => handlePress(item)}
       onPressIn={() => setIsHovered(true)}
@@ -153,35 +172,47 @@ export default function HighlightsCarousel({
   );
 
   const renderProgressBar = () => (
-    <View style={styles.progressContainer}>
-      {/* Progress dots for each slide */}
-      <View style={styles.progressDots}>
-        {highlightImages.map((_, index) => (
-          <View
-            key={index}
+    <View style={[styles.progressContainer, { left: contentPaddingH, right: contentPaddingH }]}>
+      <TouchableOpacity
+        onPress={() => scrollToIndex(currentIndex - 1)}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        style={styles.chevronButton}
+      >
+        <Ionicons name="chevron-back" size={24} color="#fff" />
+      </TouchableOpacity>
+      <View style={{ flex: 1, flexDirection: "row", alignItems: "center" }}>
+        <View style={styles.progressDots}>
+          {highlightImages.map((_, index) => (
+            <View
+              key={index}
+              style={[
+                styles.progressDot,
+                index === currentIndex && styles.activeProgressDot
+              ]}
+            />
+          ))}
+        </View>
+        <View style={styles.progressTrack}>
+          <Animated.View
             style={[
-              styles.progressDot,
-              index === currentIndex && styles.activeProgressDot
+              styles.progressFill,
+              {
+                width: progressAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: ['0%', '100%'],
+                }),
+              },
             ]}
           />
-        ))}
+        </View>
       </View>
-
-      {/* Main progress bar */}
-      <View style={styles.progressTrack}>
-        <Animated.View
-          style={[
-            styles.progressFill,
-            {
-              width: progressAnim.interpolate({
-                inputRange: [0, 1],
-                outputRange: ['0%', '100%'],
-              }),
-            },
-          ]}
-        />
-      </View>
-
+      <TouchableOpacity
+        onPress={() => scrollToIndex(currentIndex + 1)}
+        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        style={styles.chevronButton}
+      >
+        <Ionicons name="chevron-forward" size={24} color="#fff" />
+      </TouchableOpacity>
     </View>
   );
 
@@ -198,12 +229,15 @@ export default function HighlightsCarousel({
   return (
     <View style={styles.container}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingHorizontal: contentPaddingH }]}>
         <Text style={[styles.title, { color: colors.text }]}>Highlights</Text>
       </View>
 
-      {/* Carousel */}
-      <View style={styles.carouselContainer}>
+      {/* Carousel - onLayout ensures accurate width on iOS (avoids useWindowDimensions mismatch) */}
+      <View
+        style={[styles.carouselContainer, { height: carouselHeight }]}
+        onLayout={onContainerLayout}
+      >
         <FlatList
           ref={flatListRef}
           data={highlightImages}
@@ -211,16 +245,12 @@ export default function HighlightsCarousel({
           keyExtractor={keyExtractor}
           horizontal
           showsHorizontalScrollIndicator={false}
-          pagingEnabled
           snapToInterval={slideWidth}
           snapToAlignment="start"
           decelerationRate="fast"
           onScroll={handleScroll}
           scrollEventThrottle={16}
-          contentContainerStyle={[
-            styles.carouselContent,
-            { paddingRight: peekWidth }
-          ]}
+          contentContainerStyle={styles.carouselContentFullWidth}
           getItemLayout={(_, index) => ({
             length: slideWidth,
             offset: slideWidth * index,
@@ -265,11 +295,14 @@ const styles = StyleSheet.create({
   carouselContent: {
     paddingHorizontal: SPACING.md,
   },
+  carouselContentFullWidth: {
+    paddingHorizontal: 0,
+  },
   slide: {
     height: 200,
     borderRadius: RADIUS.lg,
     overflow: "hidden",
-    marginRight: SPACING.sm,
+    marginRight: 0,
     position: "relative",
     ...SHADOWS.md,
   },
@@ -348,6 +381,9 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+  },
+  chevronButton: {
+    padding: SPACING.xs,
   },
   progressDots: {
     flexDirection: "row",

@@ -150,6 +150,8 @@ create table if not exists vet_appointments (
   appointment_date date not null,
   appointment_time time,
   clinic_name text,
+  clinic_website text,
+  clinic_phone text,
   doctor_name text,
   address_line1 text,
   city text,

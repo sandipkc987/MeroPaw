@@ -1,11 +1,9 @@
- import React, { useEffect, useState } from "react";
+ import React from "react";
 import { View, Text, Pressable, Platform } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { RADIUS, SPACING, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
-import { useAuth } from "@src/contexts/AuthContext";
-import { usePets } from "@src/contexts/PetContext";
-import { fetchUnreadNotificationCount } from "@src/services/supabaseData";
+import { useNavigation } from "@src/contexts/NavigationContext";
 
 // Use Ionicons (Expo) or react-native-vector-icons (bare RN)
 // Expo:
@@ -35,32 +33,7 @@ const navItems: NavItem[] = [
 export default function Navigation({ activeTab, onTabChange, onAddPress }: NavigationProps) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
-  const { getActivePet } = usePets();
-  const activePet = getActivePet();
-  const [unreadCount, setUnreadCount] = useState(0);
-
-  useEffect(() => {
-    let mounted = true;
-    if (!user?.id) {
-      setUnreadCount(0);
-      return;
-    }
-    const load = async () => {
-      try {
-        const count = await fetchUnreadNotificationCount(user.id, activePet?.id);
-        if (mounted) setUnreadCount(count);
-      } catch {
-        if (mounted) setUnreadCount(0);
-      }
-    };
-    load();
-    const interval = setInterval(load, 30000);
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
-  }, [user?.id, activePet?.id]);
+  const { unreadNotificationCount } = useNavigation();
   return (
     <View
       accessibilityRole="tablist"
@@ -108,9 +81,9 @@ export default function Navigation({ activeTab, onTabChange, onAddPress }: Navig
                 <Ionicons
                   name={iconName as any}
                   size={26}
-                  color={item.id === "alerts" && unreadCount > 0 ? colors.accent : color}
+                  color={item.id === "alerts" && unreadNotificationCount > 0 ? colors.accent : color}
                 />
-                {item.id === "alerts" && unreadCount > 0 ? (
+                {item.id === "alerts" && unreadNotificationCount > 0 ? (
                   <View
                     style={{
                       position: "absolute",
@@ -121,7 +94,7 @@ export default function Navigation({ activeTab, onTabChange, onAddPress }: Navig
                     }}
                   >
                     <Text style={{ color: colors.accent, fontSize: 11, fontWeight: "700" }}>
-                      {unreadCount > 99 ? "99+" : unreadCount}
+                      {unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}
                     </Text>
                   </View>
                 ) : null}

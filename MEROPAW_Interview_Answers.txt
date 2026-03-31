@@ -1,0 +1,557 @@
+MEROPAW - Interview Questions & Answers
+================================================================================
+
+QUESTION 1: Walk me through the app architecture.
+--------------------------------------------------------------------------------
+
+MEROPAW follows a modern mobile application architecture with clear separation
+of concerns:
+
+FRONTEND (React Native/Expo):
+- Built with React Native using Expo for cross-platform iOS/Android development
+- Uses React Context API for state management:
+  * AuthContext: Handles authentication state, login/logout, session management
+  * PetContext: Manages pet profiles (add, update, delete, active pet selection)
+  * MemoriesContext: Stores and retrieves pet memories/photos
+  * ProfileContext: User profile information
+  * ThemeContext: Dark/light mode theming
+  * NavigationContext: Screen navigation state
+
+- Component Structure:
+  * App.tsx: Root component with ErrorBoundary, provider hierarchy
+  * Screens: HomeScreen, MemoriesScreen, HealthScreen, ExpensesScreen, etc.
+  * Components: Reusable UI components (Navigation, AddModal, AuthFlow, etc.)
+
+BACKEND (Supabase):
+- Authentication: Supabase Auth with email/password and Google OAuth
+- Database: PostgreSQL with Row-Level Security (RLS)
+- Storage: Supabase Storage buckets for receipts, memories, health documents
+- Edge Functions: Serverless functions for secure backend operations
+
+DATA FLOW:
+React Native App → Supabase Client SDK → Supabase Auth (JWT tokens)
+                                       → Supabase Database (CRUD with RLS)
+                                       → Supabase Storage (file uploads)
+                                       → Edge Functions (secure processing)
+                                       → Firebase FCM (push notifications)
+
+================================================================================
+
+QUESTION 2: Why did you choose Supabase and Firebase?
+--------------------------------------------------------------------------------
+
+SUPABASE:
+1. Open-source alternative to Firebase with PostgreSQL backend
+2. Built-in authentication with multiple providers (email, Google OAuth)
+3. Real-time subscriptions for live data updates
+4. Row-Level Security (RLS) for data protection at database level
+5. Edge Functions for serverless backend logic (Deno-based)
+6. Storage buckets for file management with access policies
+7. Auto-generated REST API from database schema
+8. Great developer experience with comprehensive documentation
+
+FIREBASE (FCM for Push Notifications):
+1. Firebase Cloud Messaging (FCM) is industry standard for push notifications
+2. Cross-platform support (iOS and Android) with single integration
+3. Reliable delivery with automatic retry mechanisms
+4. Token management for device registration
+5. Works well with React Native via @react-native-firebase/messaging
+6. Free tier is generous for small to medium apps
+
+WHY BOTH:
+- Supabase handles core app features (auth, database, storage, edge functions)
+- Firebase FCM specifically handles push notifications (more mature than alternatives)
+- This combination gives best of both worlds: Supabase's developer-friendly
+  features with Firebase's robust notification infrastructure
+
+================================================================================
+
+QUESTION 3: How does authentication and security work?
+--------------------------------------------------------------------------------
+
+AUTHENTICATION FLOW:
+
+1. EMAIL/PASSWORD LOGIN:
+   - User enters credentials on LoginScreen
+   - supabase.auth.signInWithPassword() validates credentials
+   - On success, JWT access token and refresh token returned
+   - Tokens stored securely on device via AsyncStorage
+   - User state updated in AuthContext
+
+2. GOOGLE OAUTH:
+   - Uses Expo AuthSession for OAuth flow
+   - Opens browser for Google sign-in
+   - Callback URL handles token extraction
+   - supabase.auth.setSession() establishes session
+   - Deep linking (meropaw://google-auth) for native callback
+
+3. EMAIL OTP SIGNUP:
+   - supabase.auth.signInWithOtp() sends verification code
+   - User verifies with supabase.auth.verifyOtp()
+   - Password set via supabase.auth.updateUser()
+
+SECURITY MEASURES:
+
+1. JWT-BASED AUTHENTICATION:
+   - Access tokens expire (short-lived)
+   - Refresh tokens for session renewal
+   - Tokens validated on every API request
+
+2. ROW-LEVEL SECURITY (RLS):
+   - Database policies ensure users only access their own data
+   - Example: "owner_id = auth.uid()" on all queries
+   - Even if API is compromised, data isolation maintained
+
+3. SECURE TOKEN STORAGE:
+   - Tokens stored in AsyncStorage (encrypted on device)
+   - Device registration tracks login devices
+   - New device sign-in notifications
+
+4. SERVER-SIDE SECRETS:
+   - API keys stored in Supabase Edge Functions environment
+   - Google Service Account JSON never exposed to client
+   - Firebase credentials only on backend
+
+5. INPUT VALIDATION:
+   - Edge Functions validate all incoming requests
+   - Authorization header required for sensitive operations
+   - File path validation (user can only access their files)
+
+================================================================================
+
+QUESTION 4: How is your database structured?
+--------------------------------------------------------------------------------
+
+DATABASE TABLES:
+
+1. USERS (managed by Supabase Auth):
+   - id (UUID, primary key)
+   - email, password (hashed)
+   - user_metadata (onboarding_complete, etc.)
+
+2. PETS:
+   - id (UUID, primary key)
+   - owner_id (FK to users)
+   - name, bio, breed, birth_date, color
+   - microchip, allergies, weight, is_neutered
+   - photos (array of URLs)
+   - created_at, updated_at
+
+3. REMINDERS:
+   - id, owner_id (FK), pet_id (FK)
+   - title, note, scheduled_date, scheduled_time
+   - active, repeating, category, completed
+   - has_notification, time_zone
+
+4. NOTIFICATIONS:
+   - id, owner_id (FK), pet_id (FK)
+   - kind (expense, reminder, system, etc.)
+   - title, message, cta_label, thumb_url
+   - metadata (JSONB), read_at, created_at
+
+5. EXPENSES:
+   - id, user_id (FK), pet_id (FK)
+   - title, amount, category, date
+   - receipt_path, receipt_type, document_id
+   - notes, created_at
+
+6. HEALTH_RECORDS:
+   - id, owner_id (FK), pet_id (FK)
+   - type, title, date, notes, vet
+   - attachments (JSONB array of file paths)
+
+7. VET_APPOINTMENTS:
+   - id, owner_id (FK), pet_id (FK)
+   - title, appointment_date, appointment_time
+   - clinic_name, doctor_name, address fields
+   - reason, notes, status
+
+8. PUSH_TOKENS:
+   - owner_id (FK), device_id (unique per device)
+   - expo_push_token (FCM token)
+   - platform (ios/android), updated_at
+
+9. USER_PROFILES:
+   - owner_id (FK), owner_name, owner_phone
+   - owner_email, emergency_contact, addresses
+
+10. PET_PROFILE_EXTRAS:
+    - owner_id, pet_id (composite key)
+    - personality (JSONB), wellness (JSONB)
+    - achievements (JSONB array)
+
+KEY RELATIONSHIPS:
+- All tables use owner_id or user_id as foreign key to users
+- pet_id links pet-specific data
+- document_id links expenses to parsed documents
+- RLS policies: "owner_id = auth.uid()" or "user_id = auth.uid()"
+
+================================================================================
+
+QUESTION 5: What do Edge Functions do?
+--------------------------------------------------------------------------------
+
+Edge Functions are serverless Deno functions hosted on Supabase that handle
+secure server-side operations:
+
+1. PARSE-RECEIPT FUNCTION (supabase/functions/parse-receipt/index.ts):
+   Purpose: Extract expense data from receipt images/PDFs
+   
+   Process:
+   - Receives file path and optional base64 content
+   - Downloads file from Supabase Storage (if not inline)
+   - Calls Google Document AI API for OCR/parsing
+   - Extracts: merchant name, total amount, currency, date
+   - Stores raw JSON in expense_extractions table
+   - Creates expense record with parsed data
+   - Creates notification for user
+   
+   Security:
+   - Validates JWT token from Authorization header
+   - Verifies file path starts with user's ID
+   - Google API credentials stored as environment secrets
+
+2. PARSE-CLINICAL-SUMMARY FUNCTION (supabase/functions/parse-clinical-summary/index.ts):
+   Purpose: Extract health data from vet clinical summaries
+   
+   Extracts:
+   - Weight, heart rate, respiratory rate
+   - Attitude (BAR, QAR, etc.)
+   - Visit date, title, type
+   - Doctor name, clinic name
+   - Vaccination records with due dates
+   
+   Features:
+   - Uses pdfjs-dist for PDF text extraction
+   - Optional Google Document AI for better OCR
+   - Pattern matching with confidence scoring
+   - Instrumentation logging for debugging
+
+3. SEND-FCM FUNCTION (supabase/functions/send-fcm/index.ts):
+   Purpose: Send push notifications via Firebase Cloud Messaging
+   
+   Process:
+   - Generates OAuth2 access token from service account
+   - Builds FCM v1 API payload with notification content
+   - Sends to all user's registered device tokens
+   - Cleans up unregistered tokens automatically
+   
+   Features:
+   - APNS configuration for iOS
+   - Handles multiple devices per user
+   - Returns results array with success/failure per token
+
+WHY EDGE FUNCTIONS:
+- Keep API keys secure (never exposed to client)
+- Process data without consuming mobile device resources
+- Centralized validation and error handling
+- Can be updated without app store deployment
+
+================================================================================
+
+QUESTION 6: How does receipt parsing work?
+--------------------------------------------------------------------------------
+
+RECEIPT PARSING FLOW:
+
+1. USER UPLOADS RECEIPT:
+   - User captures photo or selects from gallery
+   - Image uploaded to Supabase Storage (receipts bucket)
+   - File path: {userId}/{timestamp}-{random}.{extension}
+
+2. INVOKE EDGE FUNCTION:
+   - Client calls parse-receipt Edge Function
+   - Sends: filePath, optional base64 content, petId
+
+3. DOWNLOAD & PREPARE:
+   - Function downloads file from storage (or uses inline base64)
+   - Converts to base64 for API call
+   - Validates file isn't empty
+
+4. GOOGLE DOCUMENT AI PROCESSING:
+   - Sends image to Document AI with expense parser processor
+   - Uses service account for authentication
+   - Receives structured entity extraction:
+     * supplier_name (merchant)
+     * total_amount
+     * currency
+     * purchase_date
+
+5. STORE RESULTS:
+   - Raw JSON stored in expense_extractions table
+   - Normalized data stored in expenses table:
+     * title = merchant name
+     * amount = parsed total
+     * date = purchase date
+     * receipt_path = storage path
+
+6. NOTIFY USER:
+   - Creates notification: "Receipt processed"
+   - Message includes amount and merchant if available
+
+HANDLING LIMITATIONS:
+
+1. Format Variability:
+   - Different receipt layouts (grocery, restaurant, vet)
+   - Fallback to raw text if entities not found
+   - Confidence scoring for extracted values
+
+2. iOS Upload Issues:
+   - Inline base64 content option for iOS
+   - Bypasses storage if file appears empty
+
+3. Validation:
+   - parseNumber() cleans currency symbols
+   - Checks for valid total (non-null, positive)
+   - Handles missing fields gracefully
+
+================================================================================
+
+QUESTION 7: How do push notifications work end-to-end?
+--------------------------------------------------------------------------------
+
+PUSH NOTIFICATION FLOW:
+
+STEP 1 - PERMISSION & REGISTRATION (pushNotifications.ts):
+- App requests notification permission on startup
+- messaging().requestPermission() prompts user
+- If granted, messaging().getToken() gets FCM device token
+- Token stored in push_tokens table with device_id and platform
+
+STEP 2 - TOKEN REFRESH:
+- subscribeToTokenRefresh() listens for token changes
+- When token refreshes, updates database
+- Handles multiple devices per user
+
+STEP 3 - TRIGGER NOTIFICATION (supabaseData.ts):
+- App events create notifications via insertNotification()
+- Examples: reminder due, expense processed, new device login
+- Notification stored in notifications table
+- sendPushNotification() called to send push
+
+STEP 4 - SEND VIA EDGE FUNCTION:
+- invokeFunctionWithAuth() calls send-fcm function
+- Payload: notification (title, body), data, tokens array
+- Function authenticates with Firebase using service account
+
+STEP 5 - FCM PROCESSING (send-fcm/index.ts):
+- Generates OAuth2 access token from Google service account
+- Builds FCM v1 API message:
+  {
+    token: "device_fcm_token",
+    notification: { title, body },
+    data: { kind, metadata },
+    apns: { aps: { alert, sound: "default" } }
+  }
+- Sends to FCM endpoint for each device token
+
+STEP 6 - DEVICE RECEIVES:
+- FCM delivers to iOS (APNS) or Android
+- System notification appears
+- App can handle foreground/background differently
+
+TOKEN MANAGEMENT:
+- Unregistered tokens auto-cleaned on send failure
+- Multiple device support (user can have many devices)
+- Platform-specific handling (iOS vs Android)
+
+================================================================================
+
+QUESTION 8: How are reminders triggered?
+--------------------------------------------------------------------------------
+
+CURRENT IMPLEMENTATION:
+
+1. REMINDER STORAGE:
+   - Reminders stored in database with:
+     * scheduled_date, scheduled_time
+     * repeating (none, daily, weekly, monthly)
+     * has_notification flag
+     * completed status
+
+2. CLIENT-SIDE CHECKING:
+   - App checks for due reminders on load/refresh
+   - Compares current time with scheduled_date/time
+   - Creates notification if reminder is due
+
+3. NOTIFICATION CREATION:
+   - hasReminderNotification() checks if already notified
+   - Prevents duplicate notifications for same reminder/date
+   - insertNotification() creates in-app notification
+   - Push sent via sendPushNotification()
+
+LIMITATIONS OF CURRENT APPROACH:
+- Requires app to be open to check reminders
+- Background execution limited on iOS/Android
+- Timezone handling can be tricky
+
+FUTURE IMPROVEMENTS:
+
+1. SERVER-SIDE SCHEDULING:
+   - Supabase cron jobs or pg_cron extension
+   - Scheduled function runs every minute
+   - Checks all due reminders across users
+   - More reliable than client-side
+
+2. LOCAL NOTIFICATIONS:
+   - expo-notifications for device-scheduled alerts
+   - Schedule notification at exact time locally
+   - Works even when app is closed
+
+3. REPEATING REMINDERS:
+   - Auto-create next occurrence after completion
+   - Calculate next date based on repeat interval
+
+================================================================================
+
+QUESTION 9: What was the hardest problem you solved?
+--------------------------------------------------------------------------------
+
+HARDEST PROBLEM: Clinical Summary Parsing Accuracy
+
+CHALLENGE:
+Vet clinical summaries come in many formats with inconsistent layouts.
+Extracting structured data (weight, vitals, vaccinations) required handling:
+
+1. FORMAT VARIABILITY:
+   - Different vet software systems
+   - Various section headers (VITALS, HEALTH STATUS, OBJECTIVE)
+   - Mixed date formats (MM/DD/YYYY, MM-DD-YY)
+   - Units sometimes missing (lb, kg, bpm)
+
+2. OCR QUALITY:
+   - PDFs with poor scan quality
+   - Handwritten notes mixed with printed text
+   - Multi-column layouts confusing text extraction
+
+3. ACCURACY VS COVERAGE:
+   - Strict patterns miss valid data
+   - Loose patterns cause false positives
+   - Needed confidence scoring system
+
+SOLUTION APPROACH:
+
+1. MULTI-PASS EXTRACTION:
+   - First try Document AI for OCR (higher quality)
+   - Fall back to pdfjs-dist for embedded text
+   - Multiple regex patterns per field
+
+2. CONFIDENCE SCORING:
+   - Each extraction has confidence (0-1)
+   - Higher confidence if found in expected section
+   - Boost for explicit labels, penalties for ambiguity
+   - pickBestStrict() selects highest confidence match
+
+3. SECTION DETECTION:
+   - Find HEALTH STATUS, VITALS, TRIAGE sections
+   - Extract from section first (higher confidence)
+   - Fall back to full document search
+
+4. PLAUSIBILITY CHECKS:
+   - isPlausibleHeartRate(value): 40-240 bpm
+   - isPlausibleWeightLb(value): 0.5-250 lbs
+   - Reject values outside ranges
+
+5. INSTRUMENTATION:
+   - Log missing fields and unknown labels
+   - Track extractor version for debugging
+   - Store header preview for manual review
+
+RESULTS:
+- Improved extraction rate significantly
+- Confidence scores help users verify data
+- Debug logging identifies patterns for future improvement
+
+================================================================================
+
+QUESTION 10: What would you improve next?
+--------------------------------------------------------------------------------
+
+1. SERVER-SIDE REMINDER SCHEDULING:
+   - Implement Supabase pg_cron or external scheduler
+   - Guarantee notifications even when app is closed
+   - More reliable than client-side checking
+
+2. OFFLINE-FIRST DATA HANDLING:
+   - Implement local SQLite or WatermelonDB
+   - Queue changes when offline
+   - Sync when connection restored
+   - Conflict resolution strategy
+
+3. IMPROVED RECEIPT/CLINICAL PARSING:
+   - Train custom ML model on vet documents
+   - Add user feedback loop for corrections
+   - Build labeled dataset from user corrections
+   - Support more document formats
+
+4. AUTOMATED TESTING:
+   - Unit tests for utility functions
+   - Integration tests for Edge Functions
+   - E2E tests with Detox for mobile
+   - Mock Supabase for reliable testing
+
+5. CI/CD INTEGRATION:
+   - GitHub Actions for automated builds
+   - Run tests on pull requests
+   - Automated Expo builds (EAS Build)
+   - Staged deployments (dev → staging → prod)
+
+6. PERFORMANCE OPTIMIZATION:
+   - Implement React.memo for expensive components
+   - Use useMemo/useCallback strategically
+   - Image optimization and lazy loading
+   - Database query optimization with indexes
+
+7. ANALYTICS & MONITORING:
+   - Add error tracking (Sentry)
+   - User analytics (Mixpanel/Amplitude)
+   - Performance monitoring
+   - API latency tracking
+
+8. ADDITIONAL FEATURES:
+   - Pet health insights from historical data
+   - Expense reports and budgeting
+   - Multi-pet household management
+   - Share pet profiles with family/vets
+
+================================================================================
+
+BONUS: React Native Concepts Used
+--------------------------------------------------------------------------------
+
+1. STATE MANAGEMENT:
+   - useState for local component state
+   - useEffect for side effects and lifecycle
+   - useContext for global state access
+   - useCallback/useMemo for performance
+
+2. CONTEXT API PATTERN:
+   - createContext for state containers
+   - Provider components wrap app
+   - Custom hooks (useAuth, usePets) for clean access
+
+3. NAVIGATION:
+   - Custom NavigationContext (not React Navigation)
+   - Tab-based with overlay screens
+   - Deep linking for OAuth callbacks
+
+4. FORM HANDLING:
+   - Controlled inputs with useState
+   - Validation before submission
+   - Loading states during async operations
+
+5. API INTEGRATION:
+   - Supabase SDK for typed queries
+   - Error handling with try/catch
+   - Loading/error states in UI
+
+6. COMPONENT ORGANIZATION:
+   - Screens folder for full-page components
+   - Components folder for reusable UI
+   - Services folder for API logic
+   - Contexts folder for state management
+   - Utils folder for helpers
+
+================================================================================
+
+End of Interview Answers

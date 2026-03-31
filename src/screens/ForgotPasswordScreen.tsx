@@ -53,7 +53,7 @@ export default function ForgotPasswordScreen({ onReset, onBack }: ForgotPassword
       showsVerticalScrollIndicator={false}
     >
       <View style={{ paddingHorizontal: SPACING.xl }}>
-        <ScreenHeader title="Reset Password" onBackPress={onBack} />
+        <ScreenHeader title="Reset Password" onBackPress={onBack} useSafeArea={true} />
 
         <Text style={{ ...TYPOGRAPHY.base, color: colors.textMuted, marginBottom: SPACING.xl }}>
           Enter your email and we will send you a reset link.

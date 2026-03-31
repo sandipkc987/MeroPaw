@@ -24,6 +24,10 @@ interface ProfileData {
   color?: string;
   microchip?: string;
   allergies?: string;
+  weight?: string;
+  isNeutered?: boolean;
+  gender?: string;
+  isServiceAnimal?: boolean;
 }
 
 interface ProfileContextType {
@@ -51,6 +55,10 @@ const defaultProfile: ProfileData = {
   color: "",
   microchip: "",
   allergies: "",
+  weight: "",
+  isNeutered: undefined,
+  gender: "",
+  isServiceAnimal: undefined,
 };
 
 export function ProfileProvider({ children }: { children: React.ReactNode }) {
@@ -105,6 +113,10 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
         color: activePet?.color ?? details.color ?? prev.color,
         microchip: activePet?.microchip ?? details.microchip ?? prev.microchip,
         allergies: activePet?.allergies ?? details.allergies ?? prev.allergies,
+        weight: activePet?.weight ?? details.weight ?? prev.weight,
+        isNeutered: activePet?.isNeutered ?? details.isNeutered ?? prev.isNeutered,
+        gender: activePet?.gender ?? details.gender ?? prev.gender,
+        isServiceAnimal: activePet?.isServiceAnimal ?? details.isServiceAnimal ?? prev.isServiceAnimal,
       };
 
       // Prefer active pet photos (explicit profile selection), then favorites, then profile details
@@ -196,6 +208,8 @@ export function ProfileProvider({ children }: { children: React.ReactNode }) {
           color: updatedProfile.color,
           microchip: updatedProfile.microchip,
           allergies: updatedProfile.allergies,
+          gender: updatedProfile.gender,
+          isServiceAnimal: updatedProfile.isServiceAnimal,
           });
         }
       } catch (error) {

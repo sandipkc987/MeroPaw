@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback, memo, useRef } from "react";
-import { View, Text, ScrollView, Image, TouchableOpacity, Modal, TextInput, Alert } from "react-native";
+import { View, Text, ScrollView, Image, TouchableOpacity, Modal, TextInput, Alert, Dimensions, StyleSheet } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
-import { fetchPetProfileExtras, upsertPetProfileExtras, uploadProfilePhoto, fetchWellnessInputs } from "@src/services/supabaseData";
-import { Button, Card, Input } from "@src/components/UI";
+import { useNavigation } from "@src/contexts/NavigationContext";
+import { fetchPetProfileExtras, upsertPetProfileExtras, uploadProfilePhoto, fetchWellnessInputs, fetchWeightHistory } from "@src/services/supabaseData";
+import { Button, Card, Chip, Input } from "@src/components/UI";
 import { useAuth } from "@src/contexts/AuthContext";
 import { useProfile } from "@src/contexts/ProfileContext";
 import { usePets } from "@src/contexts/PetContext";
@@ -230,6 +231,20 @@ const EditPetInfoModal = ({ visible, onClose, currentInfo, onSave }: {
   const { colors } = useTheme();
   const [info, setInfo] = useState(currentInfo);
 
+  useEffect(() => {
+    if (visible && currentInfo) {
+      setInfo({
+        breed: currentInfo.breed ?? "",
+        birthDate: currentInfo.birthDate ?? "",
+        color: currentInfo.color ?? "",
+        microchip: currentInfo.microchip ?? "",
+        allergies: currentInfo.allergies ?? "",
+        gender: currentInfo.gender ?? "",
+        isServiceAnimal: currentInfo.isServiceAnimal,
+      });
+    }
+  }, [visible, currentInfo]);
+
   const handleSave = () => {
     onSave(info);
     onClose();
@@ -289,6 +304,43 @@ const EditPetInfoModal = ({ visible, onClose, currentInfo, onSave }: {
                 onChangeText={(text) => setInfo({...info, allergies: text})}
                 placeholder="e.g., None, Chicken, etc."
               />
+              <Input
+                label="Gender"
+                value={info.gender}
+                onChangeText={(text) => setInfo({...info, gender: text})}
+                placeholder="e.g., Male, Female"
+              />
+              <View style={{ marginTop: SPACING.sm }}>
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginBottom: SPACING.xs }}>Service animal</Text>
+                <View style={{ flexDirection: "row", gap: SPACING.sm }}>
+                  <TouchableOpacity
+                    onPress={() => setInfo({...info, isServiceAnimal: true})}
+                    style={{
+                      flex: 1,
+                      paddingVertical: SPACING.md,
+                      borderRadius: RADIUS.md,
+                      borderWidth: 1,
+                      borderColor: info.isServiceAnimal === true ? colors.accent : colors.border,
+                      backgroundColor: info.isServiceAnimal === true ? colors.accent + "18" : colors.cardSecondary,
+                    }}
+                  >
+                    <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: info.isServiceAnimal === true ? colors.accent : colors.text, textAlign: "center" }}>Yes</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setInfo({...info, isServiceAnimal: false})}
+                    style={{
+                      flex: 1,
+                      paddingVertical: SPACING.md,
+                      borderRadius: RADIUS.md,
+                      borderWidth: 1,
+                      borderColor: info.isServiceAnimal === false ? colors.accent : colors.border,
+                      backgroundColor: info.isServiceAnimal === false ? colors.accent + "18" : colors.cardSecondary,
+                    }}
+                  >
+                    <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: info.isServiceAnimal === false ? colors.accent : colors.text, textAlign: "center" }}>No</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
             </View>
           </ScrollView>
         </View>
@@ -713,14 +765,8 @@ const WellnessSection = ({
           ...SHADOWS.md
         }}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-          <View>
-            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, fontWeight: "600" }}>Wellness Score</Text>
-            <View style={{ flexDirection: "row", alignItems: "baseline", marginTop: SPACING.xs }}>
-              <Text style={{ ...TYPOGRAPHY["3xl"], color: colors.text, fontWeight: "800" }}>{wellnessScore}</Text>
-              <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginLeft: SPACING.xs }}>/100</Text>
-            </View>
-          </View>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: SPACING.sm }}>
+          <Text style={{ ...TYPOGRAPHY.base, color: colors.text, fontWeight: "700" }}>Wellness</Text>
           <TouchableOpacity
             onPress={onEdit}
             style={{
@@ -736,11 +782,7 @@ const WellnessSection = ({
           </TouchableOpacity>
         </View>
 
-        <View style={{ marginTop: SPACING.md, height: 6, backgroundColor: colors.bgSecondary, borderRadius: RADIUS.pill, overflow: "hidden" }}>
-          <View style={{ height: "100%", width: `${Math.min(100, wellnessScore)}%`, backgroundColor: colors.accent }} />
-        </View>
-
-        <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.lg }}>
+        <View style={{ flexDirection: "row", gap: SPACING.sm }}>
           <MetricCard title="Weight" value={metrics.weight} icon="barbell-outline" />
           <MetricCard title="Activity" value={metrics.activity} icon="walk-outline" />
         </View>
@@ -931,9 +973,9 @@ const WellnessEditorModal = ({
   );
 };
 
-// About Section - row style list
+// About Section – grid of chips
 const AboutPetSection = ({
-  petName, breed, birthDate, color, microchip, allergies, favoriteActivity
+  petName, breed, birthDate, color, microchip, allergies, favoriteActivity, weight, neutered, gender, serviceAnimal
 }: {
   petName: string;
   breed: string;
@@ -942,68 +984,66 @@ const AboutPetSection = ({
   microchip?: string;
   allergies?: string;
   favoriteActivity?: string;
+  weight?: string;
+  neutered?: string;
+  gender?: string;
+  serviceAnimal?: string;
 }) => {
   const { colors } = useTheme();
-  const DetailRow = ({ iconName, label, value, isLast = false }: { iconName: string; label: string; value: string; isLast?: boolean }) => (
-    <View style={{
-      flexDirection: "row",
-      paddingVertical: SPACING.md,
-      borderBottomWidth: isLast ? 0 : 1,
-      borderBottomColor: colors.borderLight,
-    }}>
-      <View style={{
-        width: 40,
-        height: 40,
-        borderRadius: 20,
-        backgroundColor: colors.surface,
-        alignItems: "center",
-        justifyContent: "center",
-        marginRight: SPACING.md,
-      }}>
-        <Ionicons name={iconName as any} size={20} color={colors.textMuted} />
-      </View>
-      <View style={{ flex: 1, justifyContent: "center" }}>
-        <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, fontWeight: "500", marginBottom: 2 }}>
-          {label}
-        </Text>
-        <Text style={{ ...TYPOGRAPHY.base, color: colors.text, fontWeight: "600" }}>
-          {value}
-        </Text>
-      </View>
-    </View>
-  );
-
-  const details = [
-    { iconName: "paw", label: "Breed", value: breed },
-    { iconName: "calendar", label: "Birth Date", value: birthDate },
-    { iconName: "color-palette", label: "Color", value: color },
-    { iconName: "card", label: "Microchip", value: microchip },
-    ...(favoriteActivity ? [{ iconName: "walk", label: "Favorite Activity", value: favoriteActivity }] : []),
-    ...(allergies ? [{ iconName: "warning", label: "Allergies", value: allergies }] : []),
-  ].filter((d): d is { iconName: string; label: string; value: string } =>
-    !!d.value && String(d.value).trim().length > 0
-  );
+  const items = [
+    { icon: "paw" as const, label: "Breed", value: breed },
+    ...(gender && gender.trim() ? [{ icon: "male-female" as const, label: "Gender", value: gender.trim() }] : []),
+    { icon: "calendar" as const, label: "Birth date", value: birthDate },
+    { icon: "color-palette" as const, label: "Color", value: color },
+    ...(weight && weight.trim() ? [{ icon: "barbell" as const, label: "Weight", value: weight.trim() }] : []),
+    ...(neutered && neutered.trim() ? [{ icon: "medical" as const, label: "Neutered", value: neutered.trim() }] : []),
+    ...(serviceAnimal && serviceAnimal.trim() ? [{ icon: "ribbon" as const, label: "Service animal", value: serviceAnimal.trim() }] : []),
+    { icon: "card" as const, label: "Microchip", value: microchip },
+    ...(favoriteActivity ? [{ icon: "walk" as const, label: "Activity", value: favoriteActivity }] : []),
+    { icon: "warning" as const, label: "Allergies", value: allergies || "None" },
+  ].filter((d) => !!d.value && String(d.value).trim().length > 0);
 
   return (
-    <Card elevated style={{ marginHorizontal: SPACING.lg, marginTop: SPACING.lg, padding: 0, overflow: "hidden" }}>
-      <View style={{ paddingHorizontal: SPACING.lg, paddingTop: SPACING.lg, paddingBottom: SPACING.sm }}>
-        <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
-          About {petName || "your pet"}
-        </Text>
-      </View>
-
-      <View style={{ paddingHorizontal: SPACING.lg, paddingBottom: SPACING.lg }}>
-        {details.map((detail, index) => (
-          <DetailRow
-            key={detail.label}
-            iconName={detail.iconName}
-            label={detail.label}
-            value={detail.value}
-            isLast={index === details.length - 1}
-          />
+    <View style={{ paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
+      <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, textTransform: "uppercase", letterSpacing: 1, fontWeight: "600", marginBottom: SPACING.md }}>
+        About {petName || "your pet"}
+      </Text>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.sm }}>
+        {items.map((item) => (
+          <View
+            key={item.label}
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              minWidth: "47%",
+              flex: 1,
+              paddingVertical: SPACING.sm,
+              paddingHorizontal: SPACING.md,
+              borderRadius: RADIUS.lg,
+              backgroundColor: colors.card,
+              borderWidth: 1,
+              borderColor: colors.borderLight,
+            }}
+          >
+            <View style={{
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              backgroundColor: colors.accent + "18",
+              alignItems: "center",
+              justifyContent: "center",
+              marginRight: SPACING.sm,
+            }}>
+              <Ionicons name={item.icon} size={18} color={colors.accent} />
+            </View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted }}>{item.label}</Text>
+              <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.text }} numberOfLines={1}>{item.value}</Text>
+            </View>
+          </View>
         ))}
       </View>
-    </Card>
+    </View>
   );
 };
 
@@ -1037,107 +1077,191 @@ const formatJoinedDate = (timestamp?: number): string => {
   return `Joined ${formatted}`;
 };
 
+const formatAge = (birthDate?: string): string | null => {
+  if (!birthDate || !birthDate.trim()) return null;
+  const birth = new Date(birthDate);
+  if (Number.isNaN(birth.getTime())) return null;
+  const now = new Date();
+  const months = (now.getFullYear() - birth.getFullYear()) * 12 + (now.getMonth() - birth.getMonth());
+  if (months < 0) return null;
+  if (months < 12) return months <= 1 ? "1 month old" : `${months} months old`;
+  const years = Math.floor(months / 12);
+  return years === 1 ? "1 year old" : `${years} years old`;
+};
 
 const PhotosVideosSection = () => {
   const { colors } = useTheme();
   const { memories } = useMemories();
+  const { navigateTo } = useNavigation();
+  const screenWidth = Dimensions.get('window').width;
+  const gridPadding = SPACING.lg;
+  const gridGap = 3;
+  const numColumns = 3;
+  const itemSize = (screenWidth - (gridPadding * 2) - (gridGap * (numColumns - 1))) / numColumns;
   
-  // Get all highlight images in chronological order (first come first present)
-  const allHighlightImages = useMemo(() => {
+  const allPhotos = useMemo(() => {
     return memories
-      .filter(m => !m.isArchived && m.type === 'photo') // Only photos for now
-      .sort((a, b) => a.uploadedAt - b.uploadedAt) // Oldest first (chronological)
-      .map(memory => ({
-        id: memory.id,
-        type: memory.type,
-        src: memory.src,
-        caption: memory.title || memory.note || '',
-        timeAgo: formatTimeAgo(memory.uploadedAt),
-        uploadedAt: memory.uploadedAt
-      }));
+      .filter(m => !m.isArchived)
+      .sort((a, b) => b.uploadedAt - a.uploadedAt)
+      .slice(0, 9);
   }, [memories]);
 
-  const favoritePosts = allHighlightImages;
-
-  if (favoritePosts.length === 0) {
+  if (allPhotos.length === 0) {
     return (
       <View style={{ marginTop: SPACING.xl, paddingHorizontal: SPACING.lg }}>
-        <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.lg }}>
-          <Ionicons name="images" size={20} color={colors.text} style={{ marginRight: SPACING.sm }} />
-          <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>Memories</Text>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: SPACING.md }}>
+          <View style={{ flexDirection: "row", alignItems: "center" }}>
+            <View style={{
+              width: 32,
+              height: 32,
+              borderRadius: 10,
+              backgroundColor: colors.accent + "15",
+              alignItems: "center",
+              justifyContent: "center",
+              marginRight: SPACING.sm,
+            }}>
+              <Ionicons name="grid" size={16} color={colors.accent} />
+            </View>
+            <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>Memories</Text>
+          </View>
         </View>
-        <Card style={{ alignItems: "center", paddingVertical: SPACING.xl }}>
-          <Ionicons name="images-outline" size={36} color={colors.textMuted} />
-          <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.sm }}>
-            No memories yet
+        <View style={{
+          backgroundColor: colors.card,
+          borderRadius: RADIUS.xl,
+          padding: SPACING.xl,
+          alignItems: "center",
+          borderWidth: 1,
+          borderColor: colors.borderLight,
+        }}>
+          <View style={{
+            width: 56,
+            height: 56,
+            borderRadius: 28,
+            backgroundColor: colors.accent + "12",
+            alignItems: "center",
+            justifyContent: "center",
+            marginBottom: SPACING.md,
+          }}>
+            <Ionicons name="camera-outline" size={28} color={colors.accent} />
+          </View>
+          <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, textAlign: "center" }}>
+            Capture moments with your pet
           </Text>
-        </Card>
+        </View>
       </View>
     );
   }
 
   return (
     <View style={{ marginTop: SPACING.xl, paddingHorizontal: SPACING.lg }}>
-      <View style={{ flexDirection: "row", alignItems: "center", marginBottom: SPACING.lg }}>
-        <Ionicons name="images" size={20} color={colors.text} style={{ marginRight: SPACING.sm }} />
-        <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>Memories</Text>
+      <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: SPACING.md }}>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          <View style={{
+            width: 32,
+            height: 32,
+            borderRadius: 10,
+            backgroundColor: colors.accent + "15",
+            alignItems: "center",
+            justifyContent: "center",
+            marginRight: SPACING.sm,
+          }}>
+            <Ionicons name="grid" size={16} color={colors.accent} />
+          </View>
+          <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>Memories</Text>
+          <View style={{
+            marginLeft: SPACING.sm,
+            backgroundColor: colors.bgSecondary,
+            paddingHorizontal: 8,
+            paddingVertical: 2,
+            borderRadius: RADIUS.pill,
+          }}>
+            <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, fontWeight: "600" }}>
+              {memories.filter(m => !m.isArchived).length}
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity
+          onPress={() => navigateTo("Memories")}
+          style={{ flexDirection: "row", alignItems: "center" }}
+        >
+          <Text style={{ ...TYPOGRAPHY.sm, color: colors.accent, fontWeight: "600" }}>See all</Text>
+          <Ionicons name="chevron-forward" size={16} color={colors.accent} style={{ marginLeft: 2 }} />
+        </TouchableOpacity>
       </View>
 
-      {/* Memories Grid */}
-      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: SPACING.md }}>
-        {favoritePosts.map((post) => {
-          const isVideo = post.type === "video";
+      <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+        {allPhotos.map((photo, index) => {
+          const isVideo = photo.type === "video";
+          const isFavorite = photo.isFavorite;
+          const isLastInRow = (index + 1) % numColumns === 0;
+          const isLastRow = index >= allPhotos.length - (allPhotos.length % numColumns || numColumns);
+          
           return (
-            <View key={post.id} style={{ width: "48%" }}>
-              <View style={{
-                borderRadius: RADIUS.lg,
+            <TouchableOpacity
+              key={photo.id}
+              activeOpacity={0.9}
+              onPress={() => navigateTo("Memories")}
+              style={{
+                width: itemSize,
+                height: itemSize,
+                marginRight: isLastInRow ? 0 : gridGap,
+                marginBottom: isLastRow ? 0 : gridGap,
+                borderRadius: RADIUS.md,
                 overflow: "hidden",
-                backgroundColor: colors.surface,
-                borderWidth: 1,
-                borderColor: colors.borderLight,
-              }}>
-                <View style={{ position: "relative" }}>
-                  <Image
-                    source={{ uri: post.src }}
-                    style={{ width: "100%", aspectRatio: 1, backgroundColor: colors.surface }}
-                    resizeMode="cover"
-                  />
-                  {isVideo && (
-                    <View style={{
-                      position: "absolute",
-                      right: 8,
-                      top: 8,
-                      width: 22,
-                      height: 22,
-                      borderRadius: 11,
-                      backgroundColor: "rgba(0,0,0,0.5)",
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}>
-                      <Ionicons name="play" size={12} color={colors.white} />
-                    </View>
-                  )}
+              }}
+            >
+              <Image
+                source={{ uri: photo.src }}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  backgroundColor: colors.bgSecondary,
+                }}
+                resizeMode="cover"
+              />
+                {isVideo && (
                   <View style={{
                     position: "absolute",
-                    left: 8,
-                    bottom: 8,
-                    backgroundColor: "rgba(0,0,0,0.45)",
-                    borderRadius: RADIUS.sm,
-                    paddingHorizontal: 6,
-                    paddingVertical: 2,
+                    top: 6,
+                    right: 6,
+                    width: 22,
+                    height: 22,
+                    borderRadius: 11,
+                    backgroundColor: "rgba(0,0,0,0.6)",
+                    alignItems: "center",
+                    justifyContent: "center",
                   }}>
-                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.white }}>
-                      {post.timeAgo || "now"}
+                    <Ionicons name="play" size={12} color="#fff" />
+                  </View>
+                )}
+                {isFavorite && (
+                  <View style={{
+                    position: "absolute",
+                    top: 6,
+                    left: 6,
+                    width: 22,
+                    height: 22,
+                    borderRadius: 11,
+                    backgroundColor: "rgba(255,59,48,0.9)",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}>
+                    <Ionicons name="heart" size={12} color="#fff" />
+                  </View>
+                )}
+                {index === allPhotos.length - 1 && memories.filter(m => !m.isArchived).length > 9 && (
+                  <View style={{
+                    ...StyleSheet.absoluteFillObject,
+                    backgroundColor: "rgba(0,0,0,0.5)",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}>
+                    <Text style={{ color: "#fff", fontSize: 18, fontWeight: "700" }}>
+                      +{memories.filter(m => !m.isArchived).length - 9}
                     </Text>
                   </View>
-                </View>
-              </View>
-              {post.caption ? (
-                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.xs }} numberOfLines={2}>
-                  {post.caption}
-                </Text>
-              ) : null}
-            </View>
+                )}
+            </TouchableOpacity>
           );
         })}
       </View>
@@ -1267,30 +1391,13 @@ const AchievementsRow = ({
           })
         )}
 
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ paddingVertical: SPACING.sm, paddingHorizontal: SPACING.md }}
+        <TouchableOpacity
+          onPress={onAddPress}
+          style={{ flexDirection: "row", alignItems: "center", paddingVertical: SPACING.sm, paddingLeft: SPACING.md }}
         >
-          <TouchableOpacity
-            onPress={onAddPress}
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              paddingVertical: SPACING.sm,
-              paddingHorizontal: SPACING.lg,
-              backgroundColor: colors.bgSecondary,
-              borderRadius: RADIUS.pill,
-              borderWidth: 1,
-              borderColor: colors.borderLight,
-            }}
-          >
-            <Ionicons name="add-circle" size={20} color={colors.accent} style={{ marginRight: SPACING.sm }} />
-            <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.accent }}>
-              Add Achievement
-            </Text>
-          </TouchableOpacity>
-        </ScrollView>
+          <Ionicons name="add-circle-outline" size={18} color={colors.accent} style={{ marginRight: SPACING.xs }} />
+          <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.accent }}>Add achievement</Text>
+        </TouchableOpacity>
       </View>
     </Card>
   );
@@ -1445,7 +1552,7 @@ const PhotoInteractionModal = ({
       // Launch image picker
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         aspect: photoType === 'cover' ? [16, 9] : [1, 1],
         quality: 0.8,
       });
@@ -1473,7 +1580,7 @@ const PhotoInteractionModal = ({
 
       // Launch camera
       const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         aspect: photoType === 'cover' ? [16, 9] : [1, 1],
         quality: 0.8,
       });
@@ -1622,7 +1729,6 @@ export default function ProfileScreen() {
   const [showWellnessEditor, setShowWellnessEditor] = useState(false);
   const [healthWellnessScore, setHealthWellnessScore] = useState<number | null>(null);
   const [showEditBio, setShowEditBio] = useState(false);
-  const [showEditPetInfo, setShowEditPetInfo] = useState(false);
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [photoModalType, setPhotoModalType] = useState<'cover' | 'profile'>('profile');
   const [showPhotoOptionsModal, setShowPhotoOptionsModal] = useState(false);
@@ -1647,6 +1753,7 @@ export default function ProfileScreen() {
   const [showWeightDialog, setShowWeightDialog] = useState(false);
   const [showActivityDialog, setShowActivityDialog] = useState(false);
   const [showVaccineDialog, setShowVaccineDialog] = useState(false);
+  const [latestWeightFromHealth, setLatestWeightFromHealth] = useState<string>("");
 
   const [isInitialLoad, setIsInitialLoad] = useState(true);
 
@@ -1677,10 +1784,17 @@ export default function ProfileScreen() {
         const resetAchievements = () => setAchievements([]);
 
         if (user?.id) {
-          const [extras, wellnessInputs] = await Promise.all([
+          const [extras, wellnessInputs, weightHistory] = await Promise.all([
             fetchPetProfileExtras(user.id, activePetId),
             fetchWellnessInputs(user.id, activePetId).catch(() => null),
+            fetchWeightHistory(user.id, activePetId).catch(() => []),
           ]);
+          const latestEntry = Array.isArray(weightHistory) && weightHistory.length > 0 ? weightHistory[0] : null;
+          if (latestEntry && Number.isFinite(latestEntry.weight)) {
+            setLatestWeightFromHealth(`${latestEntry.weight} lb`);
+          } else {
+            setLatestWeightFromHealth("");
+          }
           if (extras?.personality) {
             setPersonalityTraits(extras.personality.traits || []);
             setFavoriteActivity(extras.personality.favoriteActivity || "");
@@ -1745,6 +1859,7 @@ export default function ProfileScreen() {
           resetAchievements();
         }
         setHealthWellnessScore(null);
+        setLatestWeightFromHealth("");
       } catch (error) {
         console.error("Failed to load pet profile data:", error);
       } finally {
@@ -1808,17 +1923,27 @@ export default function ProfileScreen() {
 
 
   // Merge profile data with local state for compatibility - memoized to prevent unnecessary re-renders
-  const profile = useMemo(() => ({
-    name: activePet?.name || profileData.petName || "Your pet",
-    breed: activePet?.breed || profileData.breed || "",
-    birthDate: activePet?.birthDate || profileData.birthDate || "",
-    color: activePet?.color || profileData.color || "",
-    microchip: activePet?.microchip || profileData.microchip || "",
-    allergies: activePet?.allergies || profileData.allergies || "",
-    bio: activePet?.bio || profileData.bio || "",
-    avatarUrl: profileData.avatarUrl || "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=600",
-    coverUrl: profileData.coverUrl || "https://images.unsplash.com/photo-1507149833265-60c372daea22?w=1600"
-  }), [
+  const profile = useMemo(() => {
+    const isNeutered = activePet?.isNeutered ?? profileData.isNeutered;
+    const neuteredDisplay = isNeutered === true ? "Neutered" : isNeutered === false ? "Not neutered" : "";
+    const isServiceAnimal = activePet?.isServiceAnimal ?? profileData.isServiceAnimal;
+    const serviceAnimalDisplay = isServiceAnimal === true ? "Yes" : isServiceAnimal === false ? "No" : "";
+    return {
+      name: activePet?.name || profileData.petName || "Your pet",
+      breed: activePet?.breed || profileData.breed || "",
+      birthDate: activePet?.birthDate || profileData.birthDate || "",
+      color: activePet?.color || profileData.color || "",
+      microchip: activePet?.microchip || profileData.microchip || "",
+      allergies: activePet?.allergies || profileData.allergies || "",
+      weight: latestWeightFromHealth || activePet?.weight || profileData.weight || "",
+      neutered: neuteredDisplay,
+      gender: activePet?.gender || profileData.gender || "",
+      serviceAnimal: serviceAnimalDisplay,
+      bio: activePet?.bio || profileData.bio || "",
+      avatarUrl: profileData.avatarUrl || "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=600",
+      coverUrl: profileData.coverUrl || "https://images.unsplash.com/photo-1507149833265-60c372daea22?w=1600"
+    };
+  }, [
     activePet?.name,
     activePet?.bio,
     activePet?.breed,
@@ -1826,15 +1951,24 @@ export default function ProfileScreen() {
     activePet?.color,
     activePet?.microchip,
     activePet?.allergies,
+    activePet?.weight,
+    activePet?.isNeutered,
+    activePet?.gender,
+    activePet?.isServiceAnimal,
     profileData.petName,
     profileData.breed,
     profileData.birthDate,
     profileData.color,
     profileData.microchip,
     profileData.allergies,
+    profileData.weight,
+    profileData.isNeutered,
+    profileData.gender,
+    profileData.isServiceAnimal,
     profileData.bio,
     profileData.avatarUrl,
-    profileData.coverUrl
+    profileData.coverUrl,
+    latestWeightFromHealth,
   ]);
 
   const handleSaveBio = async (newBio: string) => {
@@ -1849,6 +1983,8 @@ export default function ProfileScreen() {
       color: newInfo.color,
       microchip: newInfo.microchip,
       allergies: newInfo.allergies,
+      gender: newInfo.gender,
+      isServiceAnimal: newInfo.isServiceAnimal,
     });
     Alert.alert("Success", "Pet information updated successfully!");
   };
@@ -2006,7 +2142,7 @@ export default function ProfileScreen() {
       const targetType = photoTargetRef.current || 'avatar';
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         aspect: targetType === 'cover' ? [16, 9] : [1, 1],
         quality: 0.6, // Reduced from 0.8 to 0.6 for better performance
       });
@@ -2032,7 +2168,7 @@ export default function ProfileScreen() {
       const targetType = photoTargetRef.current || 'avatar';
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         aspect: targetType === 'cover' ? [16, 9] : [1, 1],
         quality: 0.6, // Reduced from 0.8 to 0.6 for better performance
         allowsMultipleSelection: false,
@@ -2076,191 +2212,133 @@ export default function ProfileScreen() {
   );
   const hasAchievements = achievements.length > 0;
 
+  const [headerCompact, setHeaderCompact] = useState(false);
+  const headerCompactRef = useRef(false);
+  const lastScrollYRef = useRef(0);
+  const SCROLL_DOWN_THRESHOLD = 50;
+  const SCROLL_UP_THRESHOLD = 35;
+  const handleProfileScroll = useCallback((event: any) => {
+    const y = event.nativeEvent?.contentOffset?.y ?? 0;
+    if (y <= 0) {
+      if (headerCompactRef.current) {
+        headerCompactRef.current = false;
+        setHeaderCompact(false);
+      }
+    } else {
+      const nextCompact = y >= SCROLL_DOWN_THRESHOLD ? true : y <= SCROLL_UP_THRESHOLD ? false : headerCompactRef.current;
+      if (nextCompact !== headerCompactRef.current) {
+        headerCompactRef.current = nextCompact;
+        setHeaderCompact(nextCompact);
+      }
+    }
+    lastScrollYRef.current = y;
+  }, []);
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      {/* Screen Header with Back Button and Hamburger Menu */}
       <ScreenHeader
         title="Profile"
-        titleStyle={{ ...TYPOGRAPHY.base, fontWeight: "600", letterSpacing: -0.2 }}
+        centerTitle={headerCompact}
+        titleStyle={headerCompact ? { ...TYPOGRAPHY.sm, fontWeight: "400" } : { ...TYPOGRAPHY.base, fontWeight: "400" }}
         paddingTop={SPACING.lg}
-        paddingBottom={SPACING.lg}
+        paddingBottom={headerCompact ? SPACING.sm : SPACING.sm}
       />
-      
+
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingBottom: 120 }}
         showsVerticalScrollIndicator={false}
         bounces
+        onScroll={handleProfileScroll}
+        scrollEventThrottle={0}
       >
-        {/* Profile Header */}
-        <View style={profileHeaderStyle}>
-          <View style={{ flexDirection: "row", alignItems: "center" }}>
-            <TouchableOpacity
-              onPress={handleAvatarPress}
-              activeOpacity={0.9}
-              style={avatarContainerStyle}
-            >
-              <View
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  borderRadius: avatarRadius,
-                  overflow: "hidden",
-                  backgroundColor: colors.surface,
-                  borderWidth: 2,
-                  borderColor: colors.borderLight,
-                }}
-              >
-                <Image
-                  source={{ uri: profile.avatarUrl || "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=600" }}
-                  style={{ width: "100%", height: "100%" }}
-                  resizeMode="cover"
-                  fadeDuration={100}
-                  progressiveRenderingEnabled={true}
+        {/* Cover + avatar hero – full-width cover, avatar overlapping, centered profile below */}
+        <View style={{ marginTop: SPACING.lg, marginBottom: SPACING.md }}>
+          <TouchableOpacity activeOpacity={1} onPress={handleCoverPress} style={{ width: "100%" }}>
+            <View style={{ width: "100%", aspectRatio: 2.2, backgroundColor: colors.surface }}>
+              <Image
+                source={{ uri: profile.coverUrl || "https://images.unsplash.com/photo-1507149833265-60c372daea22?w=1600" }}
+                style={{ width: "100%", height: "100%" }}
+                resizeMode="cover"
+              />
+              <View style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: "50%" }}>
+                <LinearGradient
+                  colors={["transparent", colors.bg]}
+                  style={{ flex: 1 }}
                 />
               </View>
+            </View>
+          </TouchableOpacity>
+          <View style={{ paddingHorizontal: SPACING.lg, alignItems: "center", marginTop: -avatarRadius - 8 }}>
+            <View style={{ position: "relative" }}>
+              <TouchableOpacity
+                onPress={handleAvatarPress}
+                activeOpacity={0.9}
+                style={{
+                  width: avatarSize + 8,
+                  height: avatarSize + 8,
+                  borderRadius: (avatarSize + 8) / 2,
+                  padding: 4,
+                  backgroundColor: colors.bg,
+                  ...SHADOWS.md,
+                }}
+              >
+                <View style={{ width: avatarSize, height: avatarSize, borderRadius: avatarRadius, overflow: "hidden", backgroundColor: colors.surface }}>
+                  <Image
+                    source={{ uri: profile.avatarUrl || "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=600" }}
+                    style={{ width: "100%", height: "100%" }}
+                    resizeMode="cover"
+                  />
+                </View>
+              </TouchableOpacity>
               <View
                 style={{
                   position: "absolute",
-                  right: -8,
-                  bottom: -8,
-                  width: cameraSize,
-                  height: cameraSize,
-                  borderRadius: cameraRadius,
-                  backgroundColor: colors.card,
+                  right: 0,
+                  bottom: 0,
+                  width: 32,
+                  height: 32,
+                  borderRadius: 16,
+                  backgroundColor: colors.accent,
                   alignItems: "center",
                   justifyContent: "center",
-                  borderWidth: 2,
-                  borderColor: colors.borderLight,
-                  shadowColor: "#000",
-                  shadowOpacity: 0.18,
-                  shadowRadius: 6,
-                  shadowOffset: { width: 0, height: 2 },
-                  elevation: 4,
                 }}
               >
-                <Ionicons name="camera" size={15} color={colors.text} />
+                <Ionicons name="camera" size={16} color={colors.white} />
               </View>
-            </TouchableOpacity>
-            <View style={{ marginLeft: SPACING.lg, flex: 1 }}>
-              <Text style={nameTextStyle}>{profile.name}</Text>
-              <Text style={sublineTextStyle}>
-                {profile.bio?.trim()
-                  ? profile.bio
-                  : profile.birthDate
-                    ? `Born ${profile.birthDate}`
-                    : "Add a short bio"}
+            </View>
+            <View style={{ flexDirection: "row", alignItems: "baseline", justifyContent: "center", flexWrap: "wrap", marginTop: SPACING.md, gap: 4 }}>
+              <Text style={{ ...TYPOGRAPHY["2xl"], fontWeight: "800", color: colors.text }} numberOfLines={1}>
+                {profile.name}
               </Text>
-              <View
-                style={{
-                  flexDirection: "row",
-                  flexWrap: "wrap",
-                  gap: SPACING.sm,
-                  marginTop: SPACING.sm,
-                }}
-              >
-                <InfoChip icon="calendar-outline" label={joinedLabel} />
-              </View>
-              <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.md }}>
-                <TouchableOpacity
-                  onPress={() => setShowEditBio(true)}
-                  style={{
-                    paddingVertical: 6,
-                    paddingHorizontal: 12,
-                    borderRadius: RADIUS.pill,
-                    borderWidth: 1,
-                    borderColor: colors.borderLight,
-                    backgroundColor: colors.surface,
-                  }}
-                >
-                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.text, fontWeight: "600" }}>
-                    Edit bio
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setShowEditPetInfo(true)}
-                  style={{
-                    paddingVertical: 6,
-                    paddingHorizontal: 12,
-                    borderRadius: RADIUS.pill,
-                    borderWidth: 1,
-                    borderColor: colors.borderLight,
-                    backgroundColor: colors.surface,
-                  }}
-                >
-                  <Text style={{ ...TYPOGRAPHY.xs, color: colors.text, fontWeight: "600" }}>
-                    Edit details
-                  </Text>
-                </TouchableOpacity>
-              </View>
+              {formatAge(profile.birthDate) && (
+                <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, fontWeight: "500" }}>
+                  · {formatAge(profile.birthDate)}
+                </Text>
+              )}
+            </View>
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: 4, textAlign: "center" }} numberOfLines={2}>
+              {profile.bio?.trim() || (profile.birthDate ? `Born ${profile.birthDate}` : "Add a short bio")}
+            </Text>
+            <View style={{ marginTop: SPACING.sm }}>
+              <InfoChip icon="calendar-outline" label={joinedLabel} />
             </View>
           </View>
         </View>
 
-        {/* Tab Navigation Bar */}
-        <View
-          style={{
-            paddingHorizontal: SPACING.lg,
-            marginTop: SPACING.lg,
-            paddingBottom: SPACING.sm,
-          }}
-        >
-          <View
-            style={{
-              borderTopWidth: 1,
-              borderTopColor: colors.borderLight,
-              borderBottomWidth: 1,
-              borderBottomColor: colors.borderLight,
-            }}
-          >
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ gap: SPACING.lg, paddingHorizontal: SPACING.xs, paddingRight: SPACING.lg }}
-            >
-              {(['About', 'Personality', 'Wellness', 'Achievements'] as const).map((tab) => {
-                const isActive = activeTab === tab;
-                return (
-                  <TouchableOpacity
-                    key={tab}
-                    onPress={() => setActiveTab(tab)}
-                    activeOpacity={0.8}
-                    style={{
-                      alignItems: "center",
-                      paddingVertical: SPACING.sm,
-                      paddingHorizontal: SPACING.xs,
-                      borderBottomWidth: isActive ? 2 : 0,
-                      borderBottomColor: isActive ? colors.accent : "transparent",
-                      marginBottom: -1,
-                    }}
-                  >
-                    {isActive && (
-                      <View
-                        style={{
-                          position: "absolute",
-                          top: 0,
-                          left: 0,
-                          right: 0,
-                          height: 2,
-                          backgroundColor: colors.accent,
-                          borderRadius: 999,
-                        }}
-                      />
-                    )}
-                    <Text
-                      style={{
-                        ...TYPOGRAPHY.sm,
-                        color: isActive ? colors.text : colors.textMuted,
-                        fontWeight: isActive ? "700" : "600",
-                      }}
-                    >
-                      {tab}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
+        {/* Tabs - same style as Health History filter chips */}
+        <View style={{ paddingHorizontal: SPACING.lg, marginBottom: SPACING.lg }}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingRight: SPACING.lg }}>
+            {(["About", "Personality", "Wellness", "Achievements"] as const).map((tab, index) => (
+              <Chip
+                key={tab}
+                label={tab}
+                selected={activeTab === tab}
+                onPress={() => setActiveTab(tab)}
+                style={{ marginRight: index < 3 ? SPACING.sm : 0 }}
+              />
+            ))}
+          </ScrollView>
         </View>
 
         {/* Tab Content - Only render active tab for better performance */}
@@ -2274,6 +2352,10 @@ export default function ProfileScreen() {
               microchip={profile.microchip} 
               allergies={profile.allergies}
               favoriteActivity={favoriteActivity}
+              weight={profile.weight}
+              neutered={profile.neutered}
+              gender={profile.gender}
+              serviceAnimal={profile.serviceAnimal}
             />
             {/* Photos & Videos Section (Favorites from Memories) - Facebook-style */}
             <PhotosVideosSection />
@@ -2291,19 +2373,25 @@ export default function ProfileScreen() {
                 onEdit={() => setShowPersonalityEditor(true)}
               />
             ) : (
-              <Card elevated style={{ padding: SPACING.lg }}>
-                <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
-                  Complete {profile.name}'s personality
-                </Text>
-                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.xs }}>
-                  Choose 3–5 traits to describe their personality.
-                </Text>
-                <Button
-                  title="Add Personality"
-                  onPress={() => setShowPersonalityEditor(true)}
-                  style={{ marginTop: SPACING.lg }}
-                />
-              </Card>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => setShowPersonalityEditor(true)}
+              >
+                <Card elevated style={{ padding: SPACING.lg, flexDirection: "row", alignItems: "center" }}>
+                  <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: colors.accentVeryLight, alignItems: "center", justifyContent: "center", marginRight: SPACING.md }}>
+                    <Ionicons name="sparkles" size={22} color={colors.accent} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>
+                      Add personality
+                    </Text>
+                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
+                      Choose 3–5 traits for {profile.name}
+                    </Text>
+                  </View>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.accent }}>Add</Text>
+                </Card>
+              </TouchableOpacity>
             )}
           </View>
         )}
@@ -2319,19 +2407,25 @@ export default function ProfileScreen() {
                 scoreOverride={healthWellnessScore}
               />
             ) : (
-              <Card elevated style={{ padding: SPACING.lg }}>
-                <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
-                  Add wellness stats
-                </Text>
-                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.xs }}>
-                  Track mood, activity, and vaccine status to see a wellness score.
-                </Text>
-                <Button
-                  title="Add Wellness"
-                  onPress={() => setShowWellnessEditor(true)}
-                  style={{ marginTop: SPACING.lg }}
-                />
-              </Card>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => setShowWellnessEditor(true)}
+              >
+                <Card elevated style={{ padding: SPACING.lg, flexDirection: "row", alignItems: "center" }}>
+                  <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: colors.accentVeryLight, alignItems: "center", justifyContent: "center", marginRight: SPACING.md }}>
+                    <Ionicons name="fitness" size={22} color={colors.accent} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>
+                      Add wellness
+                    </Text>
+                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
+                      Mood, activity, vaccine status
+                    </Text>
+                  </View>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.accent }}>Add</Text>
+                </Card>
+              </TouchableOpacity>
             )}
           </View>
         )}
@@ -2344,19 +2438,25 @@ export default function ProfileScreen() {
                 onAddPress={() => setShowAddAchievementModal(true)}
               />
             ) : (
-              <Card elevated style={{ padding: SPACING.lg }}>
-                <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text }}>
-                  Add your first achievement
-                </Text>
-                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.xs }}>
-                  Celebrate milestones like grooming streaks and vet visits.
-                </Text>
-                <Button
-                  title="Add Achievement"
-                  onPress={() => setShowAddAchievementModal(true)}
-                  style={{ marginTop: SPACING.lg }}
-                />
-              </Card>
+              <TouchableOpacity
+                activeOpacity={0.9}
+                onPress={() => setShowAddAchievementModal(true)}
+              >
+                <Card elevated style={{ padding: SPACING.lg, flexDirection: "row", alignItems: "center" }}>
+                  <View style={{ width: 44, height: 44, borderRadius: 22, backgroundColor: colors.accentVeryLight, alignItems: "center", justifyContent: "center", marginRight: SPACING.md }}>
+                    <Ionicons name="trophy" size={22} color={colors.accent} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>
+                      Add achievements
+                    </Text>
+                    <Text style={{ ...TYPOGRAPHY.xs, color: colors.textMuted, marginTop: 2 }}>
+                      Milestones, grooming, vet visits
+                    </Text>
+                  </View>
+                  <Text style={{ ...TYPOGRAPHY.sm, fontWeight: "600", color: colors.accent }}>Add</Text>
+                </Card>
+              </TouchableOpacity>
             )}
           </View>
         )}
@@ -2369,19 +2469,6 @@ export default function ProfileScreen() {
         currentBio={profile.bio}
         petName={profile.name}
         onSave={handleSaveBio}
-      />
-
-      <EditPetInfoModal
-        visible={showEditPetInfo}
-        onClose={() => setShowEditPetInfo(false)}
-        currentInfo={{
-          breed: profile.breed,
-          birthDate: profile.birthDate,
-          color: profile.color,
-          microchip: profile.microchip,
-          allergies: profile.allergies,
-        }}
-        onSave={handleSavePetInfo}
       />
 
       <PhotoInteractionModal

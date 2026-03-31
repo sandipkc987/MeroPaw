@@ -17,16 +17,19 @@ export type ActionSheetOption = {
 type ActionSheetProps = {
   visible: boolean;
   title?: string;
+  message?: string;
   options: ActionSheetOption[];
   onClose: () => void;
   variant?: "list" | "quick";
   footerText?: string;
+  /** Show popup centered on screen instead of at bottom */
+  centered?: boolean;
 };
 
-export default function ActionSheet({ visible, title, options, onClose, variant = "list", footerText }: ActionSheetProps) {
+export default function ActionSheet({ visible, title, message, options, onClose, variant = "list", footerText, centered }: ActionSheetProps) {
   const { colors } = useTheme();
   if (!visible) return null;
-  const isCentered = variant === "quick";
+  const isCentered = centered ?? variant === "quick";
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
@@ -46,16 +49,16 @@ export default function ActionSheet({ visible, title, options, onClose, variant 
         <View
           style={{
             backgroundColor: colors.card,
-            borderTopLeftRadius: isCentered ? RADIUS.xl : RADIUS.xl,
-            borderTopRightRadius: isCentered ? RADIUS.xl : RADIUS.xl,
-            borderRadius: isCentered ? RADIUS.xl : undefined,
+            borderRadius: RADIUS.xl,
             width: isCentered ? "100%" : undefined,
-            maxWidth: isCentered ? 420 : undefined,
+            maxWidth: isCentered ? 400 : undefined,
             paddingHorizontal: SPACING.lg,
-            paddingTop: SPACING.md,
+            paddingTop: isCentered ? SPACING.xl : SPACING.md,
             paddingBottom: SPACING.lg,
             borderTopWidth: isCentered ? 0 : 1,
             borderTopColor: colors.borderLight,
+            borderWidth: 1,
+            borderColor: colors.borderLight,
             ...SHADOWS.lg,
           }}
           onStartShouldSetResponder={() => true}
@@ -190,11 +193,16 @@ export default function ActionSheet({ visible, title, options, onClose, variant 
           ) : (
             <>
               {title ? (
-                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginBottom: SPACING.sm }}>
+                <Text style={{ ...TYPOGRAPHY.lg, fontWeight: "700", color: colors.text, marginBottom: message ? SPACING.xs : SPACING.md }}>
                   {title}
                 </Text>
               ) : null}
-            <View style={{ gap: SPACING.xs }}>
+              {message ? (
+                <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginBottom: SPACING.lg, lineHeight: 20 }}>
+                  {message}
+                </Text>
+              ) : null}
+            <View style={{ gap: SPACING.sm }}>
               {options.map((option, idx) => (
                 <TouchableOpacity
                   key={`${option.label}-${idx}`}
@@ -204,47 +212,45 @@ export default function ActionSheet({ visible, title, options, onClose, variant 
                   }}
                   disabled={option.disabled}
                   style={{
-                    paddingVertical: SPACING.sm + 2,
-                    paddingHorizontal: SPACING.sm,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    paddingVertical: SPACING.md,
+                    paddingHorizontal: SPACING.md,
                     borderRadius: RADIUS.md,
-                  backgroundColor: colors.cardSecondary,
+                    backgroundColor: option.destructive ? colors.danger + "12" : colors.cardSecondary,
                     borderWidth: 1,
-                    borderColor: colors.borderLight,
+                    borderColor: option.destructive ? colors.danger + "30" : colors.borderLight,
                     opacity: option.disabled ? 0.5 : 1,
                   }}
                 >
-                  <View style={{ flexDirection: "row", alignItems: "center" }}>
-                    {option.icon ? (
+                  {option.icon ? (
                     <View style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: 16,
-                      backgroundColor: colors.surface,
+                      width: 36,
+                      height: 36,
+                      borderRadius: 18,
+                      backgroundColor: option.destructive ? colors.danger + "18" : colors.surface,
                       alignItems: "center",
                       justifyContent: "center",
-                      marginRight: SPACING.sm,
-                      borderWidth: 1,
-                      borderColor: colors.borderLight,
+                      marginRight: SPACING.md,
                     }}>
-                        <Ionicons
-                          name={option.icon}
-                          size={16}
-                          color={colors.textMuted}
-                        />
-                      </View>
-                    ) : null}
-                    <Text
-                      style={{
-                        ...TYPOGRAPHY.base,
-                        color: colors.text,
-                        fontWeight: "600",
-                        flex: 1,
-                      }}
-                    >
-                      {option.label}
-                    </Text>
-                  <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
-                  </View>
+                      <Ionicons
+                        name={option.icon}
+                        size={18}
+                        color={option.iconColor || (option.destructive ? colors.danger : colors.textMuted)}
+                      />
+                    </View>
+                  ) : null}
+                  <Text
+                    style={{
+                      ...TYPOGRAPHY.base,
+                      color: option.destructive ? colors.danger : colors.text,
+                      fontWeight: "600",
+                      flex: 1,
+                    }}
+                  >
+                    {option.label}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
                 </TouchableOpacity>
               ))}
             </View>

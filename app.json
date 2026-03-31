@@ -13,14 +13,22 @@
     "updates": {
       "fallbackToCacheTimeout": 0
     },
-    "assetBundlePatterns": [
-      "**/*"
-    ],
+    "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.meropaw.app",
+      "googleServicesFile": "./firebase/GoogleService-Info.plist",
+      "entitlements": {
+        "aps-environment": "production"
+      },
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["remote-notification"],
+        "NSPhotoLibraryUsageDescription": "Meropaw needs access to your photo library to add photos of your pets.",
+        "NSCameraUsageDescription": "Meropaw needs camera access to take photos of your pets.",
+        "NSPhotoLibraryAddUsageDescription": "Meropaw needs permission to save photos to your library.",
+        "NSLocationWhenInUseUsageDescription": "Meropaw uses your location to find nearby vet clinics when you schedule a visit.",
+        "NSCalendarsUsageDescription": "Meropaw adds your vet appointments to your calendar so you don't miss them."
       }
     },
     "android": {
@@ -29,13 +37,24 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/meropaw Logo.png",
         "backgroundColor": "#0c3b32"
-      }
+      },
+      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_COARSE_LOCATION", "READ_CALENDAR", "WRITE_CALENDAR"]
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "@react-native-firebase/app"
+      "@react-native-firebase/app",
+      ["expo-build-properties", { "ios": { "useModularHeaders": true } }],
+      "./plugins/withModularHeaders",
+      ["expo-calendar", { "calendarPermission": "Meropaw adds your vet appointments to your calendar so you don't miss them." }],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Meropaw needs access to your photo library to add photos of your pets.",
+          "cameraPermission": "Meropaw needs camera access to take photos of your pets."
+        }
+      ]
     ],
     "extra": {
       "eas": {

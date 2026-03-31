@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { View, Text, TouchableOpacity, Alert, Image, ActivityIndicator } from "react-native";
+import { View, Text, TouchableOpacity, Alert, Image, ActivityIndicator, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { Ionicons } from "@expo/vector-icons";
@@ -9,7 +9,7 @@ import { useTheme } from "@src/contexts/ThemeContext";
 interface ReceiptUploadProps {
   onReceiptSelect: (receipt: { type: 'image' | 'pdf'; url: string; name: string; uri: string; path?: string; documentId?: string } | null) => void;
   currentReceipt?: { type: 'image' | 'pdf'; url: string; name: string; uri: string; path?: string; documentId?: string } | null;
-  onAnalyze?: (receipt: { type: 'image' | 'pdf'; uri: string }) => Promise<void>;
+  onAnalyze?: (receipt: { type: 'image' | 'pdf'; uri: string; base64?: string }) => Promise<void>;
 }
 
 export default function ReceiptUpload({ onReceiptSelect, currentReceipt, onAnalyze }: ReceiptUploadProps) {
@@ -34,8 +34,9 @@ export default function ReceiptUpload({ onReceiptSelect, currentReceipt, onAnaly
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
+        allowsEditing: Platform.OS !== "ios",
         quality: 0.8,
+        base64: true, // Reliable on iOS: avoid reading URI which can fail
       });
 
       if (!result.canceled && result.assets[0]) {
@@ -53,7 +54,7 @@ export default function ReceiptUpload({ onReceiptSelect, currentReceipt, onAnaly
         if (onAnalyze) {
           setActiveAnalyzeType('image');
           try {
-            await onAnalyze({ type: 'image', uri: asset.uri });
+            await onAnalyze({ type: 'image', uri: asset.uri, base64: asset.base64 ?? undefined });
           } catch (error) {
             console.error("Analysis error:", error);
           } finally {

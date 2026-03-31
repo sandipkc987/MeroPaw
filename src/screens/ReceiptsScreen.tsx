@@ -1,15 +1,15 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { View, Text, ScrollView, TouchableOpacity, Image, Alert } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import ScreenHeader from "@src/components/ScreenHeader";
 import { Card, Button } from "@src/components/UI";
 import { useTheme } from "@src/contexts/ThemeContext";
-import { useNavigation } from "@src/contexts/NavigationContext";
 import { usePets } from "@src/contexts/PetContext";
 import { useAuth } from "@src/contexts/AuthContext";
 import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
 import ReceiptViewer from "@src/components/ReceiptViewer";
-import { fetchReceipts } from "@src/services/supabaseData";
+import AddExpenseModal, { type ExpenseForModal } from "@src/components/AddExpenseModal";
+import { fetchReceipts, insertExpense, insertNotification } from "@src/services/supabaseData";
 
 interface ExpenseReceipt {
   id: string;
@@ -22,32 +22,57 @@ interface ExpenseReceipt {
 
 export default function ReceiptsScreen() {
   const { colors } = useTheme();
-  const { navigateTo, triggerAddExpense } = useNavigation();
   const { activePetId } = usePets();
   const { user } = useAuth();
   const [receipts, setReceipts] = useState<ExpenseReceipt[]>([]);
   const [selectedReceipt, setSelectedReceipt] = useState<ExpenseReceipt["receipt"] | null>(null);
-  const handleExport = (format: "csv" | "pdf") => {
-    Alert.alert("Export receipts", `We'll add ${format.toUpperCase()} export soon.`);
-  };
+  const [showAddExpenseModal, setShowAddExpenseModal] = useState(false);
+
+  const loadReceipts = useCallback(async () => {
+    try {
+      if (!user?.id || !activePetId) {
+        setReceipts([]);
+        return;
+      }
+      const remote = await fetchReceipts(user.id, activePetId);
+      setReceipts(remote);
+    } catch (error) {
+      console.error("ReceiptsScreen: Failed to load receipts", error);
+      setReceipts([]);
+    }
+  }, [activePetId, user?.id]);
 
   useEffect(() => {
-    const loadReceipts = async () => {
-      try {
-        if (!user?.id || !activePetId) {
-          setReceipts([]);
-          return;
-        }
-        const remote = await fetchReceipts(user.id, activePetId);
-        setReceipts(remote);
-      } catch (error) {
-        console.error("ReceiptsScreen: Failed to load receipts", error);
-        setReceipts([]);
-      }
-    };
-
     loadReceipts();
-  }, [activePetId, user?.id]);
+  }, [loadReceipts]);
+
+  const handleSaveExpense = async (expenseData: Omit<ExpenseForModal, "id">) => {
+    if (!user?.id || !activePetId) {
+      Alert.alert("Sign in required", "Please sign in to save expenses.");
+      return;
+    }
+    try {
+      const normalized = {
+        ...expenseData,
+        date: expenseData.date || new Date().toISOString().split("T")[0],
+      };
+      await insertExpense(user.id, activePetId, normalized);
+      setShowAddExpenseModal(false);
+      await loadReceipts();
+      Alert.alert("Success", "Expense added successfully!");
+      insertNotification(user.id, {
+        petId: activePetId,
+        kind: "expense",
+        title: "Expense added",
+        message: `${expenseData.title || "Expense"} added for $${Number(expenseData.amount || 0).toFixed(2)}.`,
+        ctaLabel: "View expenses",
+        metadata: { type: "expense_added" },
+      }).catch(() => {});
+    } catch (error) {
+      console.error("Failed to add expense:", error);
+      Alert.alert("Error", "Could not save expense. Please try again.");
+    }
+  };
 
   const hasReceipts = receipts.length > 0;
 
@@ -69,10 +94,7 @@ export default function ReceiptsScreen() {
             </Text>
             <Button
               title="Add Expense"
-              onPress={() => {
-                navigateTo("Expenses");
-                triggerAddExpense();
-              }}
+              onPress={() => setShowAddExpenseModal(true)}
               style={{ marginTop: SPACING.md }}
             />
           </Card>
@@ -137,6 +159,13 @@ export default function ReceiptsScreen() {
           receipt={selectedReceipt}
         />
       )}
+
+      <AddExpenseModal
+        visible={showAddExpenseModal}
+        onClose={() => setShowAddExpenseModal(false)}
+        onSave={handleSaveExpense}
+        petId={activePetId || undefined}
+      />
     </View>
   );
 }

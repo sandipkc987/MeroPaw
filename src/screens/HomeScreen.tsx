@@ -1,5 +1,25 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
-import { View, Text, ScrollView, TouchableOpacity, Image, RefreshControl, ActivityIndicator, Modal } from "react-native";
+
+function ReceiptThumbnail({ url, size = 64 }: { url: string; size?: number }) {
+  const [loadError, setLoadError] = useState(false);
+  const { colors } = useTheme();
+  if (loadError) {
+    return (
+      <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgSecondary }}>
+        <Ionicons name="receipt-outline" size={24} color={colors.textMuted} />
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri: url }}
+      style={{ width: size, height: size }}
+      resizeMode="cover"
+      onError={() => setLoadError(true)}
+    />
+  );
+}
+import { View, Text, ScrollView, TouchableOpacity, Image, RefreshControl, ActivityIndicator, Modal, TextInput, Animated, Keyboard } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { RADIUS, SPACING, TYPOGRAPHY, SHADOWS } from "@src/theme";
 import { useTheme } from "@src/contexts/ThemeContext";
@@ -15,6 +35,7 @@ import ReceiptViewer from "@src/components/ReceiptViewer";
 import HighlightsCarousel from "@src/components/HighlightsCarousel";
 import MediaPicker from "@src/components/MediaPicker";
 import MemoryDetailsModal from "@src/components/MemoryDetailsModal";
+import ImageZoomLightbox from "@src/components/ImageZoomLightbox";
 import ActionSheet, { ActionSheetOption } from "@src/components/ActionSheet";
 import ScreenHeader from "@src/components/ScreenHeader";
 import { Ionicons } from "@expo/vector-icons";
@@ -26,11 +47,15 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useAuth } from "@src/contexts/AuthContext";
 import { fetchExpenses, fetchHealthRecords, deleteExpense, deleteHealthRecord } from "@src/services/supabaseData";
 import storage from "@src/utils/storage";
+import { compressImage } from "@src/utils/imageCompression";
 
 interface HomeScreenProps {
   showAddModal?: boolean;
   onAddModalChange?: (show: boolean) => void;
 }
+
+/** Max memory cards merged into Recent activity (same ordering as Memories, by date). */
+const HOME_MEMORY_FEED_LIMIT = 36;
 
 export default function HomeScreen({ showAddModal = false, onAddModalChange }: HomeScreenProps = {}) {
   const { colors } = useTheme();
@@ -40,7 +65,9 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
   const { profile } = useProfile();
   const { user } = useAuth();
   const [query, setQuery] = useState("");
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [items, setItems] = useState<FeedItem[]>([]);
+  const RECENT_SEARCHES_KEY = "@kasper_recent_searches";
   const [isInitialized, setIsInitialized] = useState(false);
   const [formOpen, setFormOpen] = useState(false);
   const [form, setForm] = useState<{ type: string; title: string; note: string }>({ type: "med", title: "", note: "" });
@@ -55,6 +82,8 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
   const [showMediaPicker, setShowMediaPicker] = useState(false);
   const [showDetailsModal, setShowDetailsModal] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState<{ uri: string; type: 'photo' | 'video'; width: number; height: number } | null>(null);
+  const [isProcessingMedia, setIsProcessingMedia] = useState(false);
+  const [isSavingMemory, setIsSavingMemory] = useState(false);
   const [noteModalOpen, setNoteModalOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
   const [noteTarget, setNoteTarget] = useState<FeedItem | null>(null);
@@ -66,7 +95,54 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
   const [actionSheetTitle, setActionSheetTitle] = useState<string | undefined>(undefined);
   const [actionSheetOptions, setActionSheetOptions] = useState<ActionSheetOption[]>([]);
   const [imageAspectRatios, setImageAspectRatios] = useState<Record<string, number>>({});
+  const [memoryZoomUri, setMemoryZoomUri] = useState<string | null>(null);
   const lastScrollYRef = useRef(0);
+
+  // Load recent searches on mount
+  useEffect(() => {
+    const loadRecentSearches = async () => {
+      try {
+        const saved = await storage.getItem(RECENT_SEARCHES_KEY);
+        if (saved) {
+          setRecentSearches(JSON.parse(saved));
+        }
+      } catch (error) {
+        console.error("Failed to load recent searches:", error);
+      }
+    };
+    loadRecentSearches();
+  }, []);
+
+  const addToRecentSearches = async (searchTerm: string) => {
+    if (!searchTerm || searchTerm === "search" || searchTerm.trim().length < 2) return;
+    const trimmed = searchTerm.trim();
+    const updated = [trimmed, ...recentSearches.filter(s => s.toLowerCase() !== trimmed.toLowerCase())].slice(0, 8);
+    setRecentSearches(updated);
+    try {
+      await storage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(updated));
+    } catch (error) {
+      console.error("Failed to save recent searches:", error);
+    }
+  };
+
+  const removeFromRecentSearches = async (searchTerm: string) => {
+    const updated = recentSearches.filter(s => s !== searchTerm);
+    setRecentSearches(updated);
+    try {
+      await storage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(updated));
+    } catch (error) {
+      console.error("Failed to save recent searches:", error);
+    }
+  };
+
+  const clearRecentSearches = async () => {
+    setRecentSearches([]);
+    try {
+      await storage.removeItem(RECENT_SEARCHES_KEY);
+    } catch (error) {
+      console.error("Failed to clear recent searches:", error);
+    }
+  };
 
   // Initialize feed with signup data (welcome post)
   useEffect(() => {
@@ -219,57 +295,22 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
     loadFeedSources();
   }, [activePetId, user?.id]);
 
-  // Get recent memories and convert to feed items (prioritize favorites), scoped to active pet
+  // Recent memories for the feed: same pet scope as Memories tab, sorted by date (not capped at 5)
   const recentMemories = useMemo(() => {
-    console.log('HomeScreen: Calculating recentMemories', {
-      totalMemories: memories.length,
-      activePetId,
-      memoriesWithPetId: memories.filter(m => m.petId).length,
-      allMemories: memories.map(m => ({ id: m.id, title: m.title, petId: m.petId, isFavorite: m.isFavorite, src: m.src?.substring(0, 30) + '...' }))
+    const scoped = memories.filter((m) => {
+      if (m.isArchived) return false;
+      return !activePetId || !m.petId || m.petId === activePetId;
     });
-
-    // IMPORTANT: Show memories that either:
-    // 1. Have no petId (legacy/onboarding memories)
-    // 2. Match the activePetId
-    // 3. Or if no activePetId is set, show all memories
-    const scoped = memories.filter(m => {
-      const matches = !activePetId || !m.petId || m.petId === activePetId;
-      if (!matches) {
-        console.log('HomeScreen: Memory filtered out', { id: m.id, memoryPetId: m.petId, activePetId });
-      }
-      return matches;
-    });
-    console.log('HomeScreen: Scoped memories', { count: scoped.length, scoped: scoped.map(m => ({ id: m.id, title: m.title })) });
-
-    // Get favorites first, then recent memories
-    const allFavorites = getFavoriteMemories(10); // Get more to filter after
-    const favorites = allFavorites.filter(m => !activePetId || !m.petId || m.petId === activePetId).slice(0, 3);
-    console.log('HomeScreen: Favorite memories', {
-      count: favorites.length,
-      favorites: favorites.map(m => ({ id: m.id, title: m.title, petId: m.petId }))
-    });
-
-    const recent = scoped
-      .filter(m => !m.isArchived && !m.isFavorite)
-      .sort((a, b) => b.uploadedAt - a.uploadedAt)
-      .slice(0, 5);
-
-    // Combine favorites first, then recent
-    const combined = [...favorites, ...recent].slice(0, 5);
-    console.log('HomeScreen: Combined memories for feed', {
-      count: combined.length,
-      combined: combined.map(m => ({ id: m.id, title: m.title }))
-    });
-
-    return combined.map(memory => ({
+    const sorted = [...scoped].sort((a, b) => b.uploadedAt - a.uploadedAt);
+    return sorted.slice(0, HOME_MEMORY_FEED_LIMIT).map((memory) => ({
       id: memory.id,
       type: "memory" as const,
-      title: memory.title || `${memory.type === 'video' ? 'Video' : 'Photo'}`,
-      note: memory.note, // Show note if provided, otherwise undefined
+      title: memory.title || `${memory.type === "video" ? "Video" : "Photo"}`,
+      note: memory.note,
       ts: memory.uploadedAt,
-      image: memory.src
+      image: memory.src,
     }));
-  }, [memories, getFavoriteMemories, activePetId]);
+  }, [memories, activePetId, HOME_MEMORY_FEED_LIMIT]);
 
   // Merge recent memories at the top of feed items
   const allItems = useMemo(() => {
@@ -324,31 +365,62 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
   const weekCounts = useMemo(() => {
     const now = Date.now();
     const weekStart = now - 7 * 24 * 60 * 60 * 1000;
-    const memoriesWeek = recentMemories.filter((m) => m.ts >= weekStart).length;
+    const scopedMemories = memories.filter((m) => {
+      if (m.isArchived) return false;
+      return !activePetId || !m.petId || m.petId === activePetId;
+    });
+    const memoriesWeek = scopedMemories.filter((m) => m.uploadedAt >= weekStart).length;
     const expensesWeek = expenseFeedItems.filter((e) => e.ts >= weekStart).length;
     const healthWeek = healthFeedItems.filter((h) => h.ts >= weekStart).length;
     return { memoriesWeek, expensesWeek, healthWeek };
-  }, [recentMemories, expenseFeedItems, healthFeedItems]);
+  }, [memories, activePetId, expenseFeedItems, healthFeedItems]);
 
-  const handleMediaSelected = (media: { uri: string; type: 'photo' | 'video'; width: number; height: number }) => {
-    setSelectedMedia(media);
+  const handleMediaSelected = async (media: { uri: string; type: 'photo' | 'video'; width: number; height: number }) => {
     setShowMediaPicker(false);
+    
+    // Compress image before showing details modal (videos don't need compression)
+    if (media.type === 'photo') {
+      setIsProcessingMedia(true);
+      try {
+        const compressedUri = await compressImage(media.uri, {
+          maxWidth: 1080,
+          maxHeight: 1080,
+          quality: 0.75,
+        });
+        setSelectedMedia({ ...media, uri: compressedUri });
+      } catch (error) {
+        console.error('HomeScreen: Failed to compress image', error);
+        setSelectedMedia(media); // Use original if compression fails
+      } finally {
+        setIsProcessingMedia(false);
+      }
+    } else {
+      setSelectedMedia(media);
+    }
     setShowDetailsModal(true);
   };
 
-  const handleSaveMemoryDetails = ({ title, note }: { title: string; note?: string }) => {
-    if (!selectedMedia) return;
-    addMemory({
-      type: selectedMedia.type,
-      src: selectedMedia.uri,
-      w: selectedMedia.width,
-      h: selectedMedia.height,
-      title: title || (selectedMedia.type === "video" ? "New Video" : "New Photo"),
-      note,
-      petId: activePetId || undefined,
-    });
-    setShowDetailsModal(false);
-    setSelectedMedia(null);
+  const handleSaveMemoryDetails = async ({ title, note }: { title: string; note?: string }) => {
+    if (!selectedMedia || isSavingMemory) return;
+    
+    setIsSavingMemory(true);
+    try {
+      await addMemory({
+        type: selectedMedia.type,
+        src: selectedMedia.uri,
+        w: selectedMedia.width,
+        h: selectedMedia.height,
+        title: title || (selectedMedia.type === "video" ? "New Video" : "New Photo"),
+        note,
+        petId: activePetId || undefined,
+      });
+      setShowDetailsModal(false);
+      setSelectedMedia(null);
+    } catch (error) {
+      console.error('HomeScreen: Failed to save memory', error);
+    } finally {
+      setIsSavingMemory(false);
+    }
   };
 
   const openNotesModal = (item: FeedItem) => {
@@ -698,34 +770,164 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
               paddingBottom: SPACING.md,
             }}
           >
-            <ScreenHeader
-              title={petName === "your pet" ? "Home" : petName}
-              showBackButton={false}
-              avatarUri={activePet?.photos?.[0] || profile.avatarUrl}
-              avatarFallback={petInitial}
-              onAvatarPress={() => navigateTo("Profile")}
-              actionIcon={query ? "close" : "search"}
-              onActionPress={() => setQuery(query === "" ? "search" : "")}
-            />
-
-            {/* Search Input - appears when search is active */}
+            {/* Header - switches between normal and search mode */}
             {query ? (
-              <View style={{
-                marginTop: SPACING.md,
-                marginBottom: SPACING.sm
-              }}>
-                <Input
-                  placeholder="Search activities..."
-                  value={query === "search" ? "" : query}
-                  onChangeText={(text) => setQuery(text === "" ? "" : text)}
-                  style={{
-                    backgroundColor: colors.surface,
-                    borderRadius: RADIUS.lg,
-                    borderWidth: 0
-                  }}
-                />
+              <View>
+                {/* Search Bar Row */}
+                <View style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  paddingTop: SPACING.sm,
+                  gap: SPACING.sm,
+                }}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setQuery("");
+                      Keyboard.dismiss();
+                    }}
+                    hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                    style={{
+                      padding: SPACING.xs,
+                    }}
+                  >
+                    <Ionicons name="chevron-back" size={26} color={colors.text} />
+                  </TouchableOpacity>
+                  <View style={{
+                    flex: 1,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    backgroundColor: colors.card,
+                    borderRadius: 18,
+                    paddingHorizontal: 12,
+                    height: 36,
+                  }}>
+                    <Ionicons 
+                      name="search" 
+                      size={16} 
+                      color={colors.textMuted} 
+                      style={{ marginRight: 8 }}
+                    />
+                    <TextInput
+                      placeholder="Search"
+                      placeholderTextColor={colors.textMuted}
+                      value={query === "search" ? "" : query}
+                      onChangeText={(text) => setQuery(text === "" ? "" : text)}
+                      autoFocus
+                      returnKeyType="search"
+                      onSubmitEditing={() => {
+                        if (query && query !== "search") {
+                          addToRecentSearches(query);
+                        }
+                      }}
+                      selectionColor={colors.accent}
+                      underlineColorAndroid="transparent"
+                      style={{
+                        flex: 1,
+                        fontSize: 15,
+                        fontWeight: "400",
+                        color: colors.text,
+                        paddingVertical: 0,
+                        borderWidth: 0,
+                        outlineStyle: 'none',
+                      } as any}
+                    />
+                    {query && query !== "search" && (
+                      <TouchableOpacity 
+                        onPress={() => setQuery("search")}
+                        hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                      >
+                        <Ionicons name="close-circle" size={16} color={colors.textMuted} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
+
+                {/* Recent Searches - Below the search bar */}
+                {(query === "search" || query === "") && recentSearches.length > 0 && (
+                  <View style={{ marginTop: SPACING.xl }}>
+                    <View style={{ 
+                      flexDirection: "row", 
+                      alignItems: "center", 
+                      justifyContent: "space-between",
+                      marginBottom: SPACING.sm,
+                    }}>
+                      <Text style={{ 
+                        fontSize: 15, 
+                        fontWeight: "600", 
+                        color: colors.text,
+                        letterSpacing: 0.1,
+                      }}>
+                        Recent
+                      </Text>
+                      <TouchableOpacity onPress={clearRecentSearches}>
+                        <Text style={{ 
+                          fontSize: 14, 
+                          color: colors.accent, 
+                          fontWeight: "500",
+                        }}>
+                          See all
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                    {recentSearches.map((search, index) => (
+                      <TouchableOpacity
+                        key={`${search}-${index}`}
+                        onPress={() => {
+                          setQuery(search);
+                          addToRecentSearches(search);
+                        }}
+                        activeOpacity={0.6}
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          paddingVertical: 12,
+                        }}
+                      >
+                        <View style={{
+                          width: 40,
+                          height: 40,
+                          borderRadius: 20,
+                          backgroundColor: colors.card,
+                          alignItems: "center",
+                          justifyContent: "center",
+                          marginRight: SPACING.md,
+                        }}>
+                          <Ionicons name="time-outline" size={20} color={colors.textMuted} />
+                        </View>
+                        <Text style={{ 
+                          flex: 1, 
+                          fontSize: 16,
+                          fontWeight: "400",
+                          color: colors.text,
+                          letterSpacing: 0.2,
+                        }}>
+                          {search}
+                        </Text>
+                        <TouchableOpacity
+                          onPress={() => removeFromRecentSearches(search)}
+                          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                          style={{ padding: SPACING.sm }}
+                        >
+                          <Ionicons name="ellipsis-horizontal" size={20} color={colors.textMuted} />
+                        </TouchableOpacity>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
               </View>
-            ) : null}
+            ) : (
+              <ScreenHeader
+                title={petName === "your pet" ? "Home" : petName}
+                showBackButton={false}
+                avatarUri={activePet?.photos?.[0] || profile.avatarUrl}
+                avatarFallback={petInitial}
+                onAvatarPress={() => navigateTo("Profile")}
+                extraActionIcon="search"
+                onExtraActionPress={() => setQuery("search")}
+                actionIcon="sparkles-outline"
+                onActionPress={() => navigateTo("Discover")}
+              />
+            )}
 
             {/* Quick actions - optimized spacing and alignment */}
             <ScrollView
@@ -767,16 +969,8 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
             />
 
             {/* Weekly Summary */}
-            <View style={{
-              marginTop: SPACING.lg,
-              padding: SPACING.md,
-              backgroundColor: colors.cardSecondary,
-              borderRadius: RADIUS.lg,
-              borderWidth: 1,
-              borderColor: colors.border,
-              ...SHADOWS.xs
-            }}>
-              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
+            <View style={{ marginTop: SPACING.lg }}>
+              <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: SPACING.sm }}>
                 <Text style={{ ...TYPOGRAPHY.base, fontWeight: "700", color: colors.text }}>
                   This week
                 </Text>
@@ -784,7 +978,20 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
                   Last 7 days
                 </Text>
               </View>
-              <View style={{ flexDirection: "row", gap: SPACING.sm, marginTop: SPACING.md }}>
+              <View style={{
+                backgroundColor: colors.card,
+                borderRadius: RADIUS.xl,
+                borderWidth: 1,
+                borderColor: colors.borderLight,
+                overflow: "hidden",
+                ...SHADOWS.sm,
+              }}>
+                <LinearGradient
+                  colors={[colors.accent + "14", colors.accent + "06", "transparent"]}
+                  style={{ height: 12 }}
+                />
+                <View style={{ paddingHorizontal: SPACING.md, paddingTop: SPACING.xs, paddingBottom: SPACING.md }}>
+              <View style={{ flexDirection: "row", gap: SPACING.sm }}>
                 {[
                   { label: "Memories", value: weekCounts.memoriesWeek, icon: "images-outline" },
                   { label: "Expenses", value: weekCounts.expensesWeek, icon: "card-outline" },
@@ -809,6 +1016,8 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
                     </Text>
                   </View>
                 ))}
+              </View>
+                </View>
               </View>
             </View>
 
@@ -970,15 +1179,19 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
                     style={{
                       marginHorizontal: SPACING.lg,
                       marginBottom: SPACING.md,
-                      paddingHorizontal: SPACING.lg,
-                      paddingVertical: SPACING.lg,
                       backgroundColor: colors.card,
                       borderRadius: RADIUS.lg,
                       borderWidth: 1,
                       borderColor: colors.borderLight,
+                      overflow: "hidden",
                       ...SHADOWS.sm
                     }}
                   >
+                    <LinearGradient
+                      colors={[colors.accent + "14", colors.accent + "06", "transparent"]}
+                      style={{ height: 24 }}
+                    />
+                    <View style={{ paddingHorizontal: SPACING.lg, paddingVertical: SPACING.lg, paddingTop: SPACING.sm }}>
                     {/* Feed header */}
                     <View style={{
                       flexDirection: "row",
@@ -1044,23 +1257,27 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
 
                     {/* Full-width image */}
                     {it.image ? (
-                      <View style={{
-                        marginHorizontal: -SPACING.lg, // Extend to full width
-                        marginBottom: SPACING.sm,
-                        borderRadius: RADIUS.md,
-                        overflow: "hidden",
-                        backgroundColor: colors.bgSecondary,
-                      }}>
+                      <TouchableOpacity
+                        activeOpacity={0.92}
+                        onPress={() => setMemoryZoomUri(it.image!)}
+                        style={{
+                          marginHorizontal: -SPACING.lg,
+                          marginBottom: SPACING.sm,
+                          borderRadius: RADIUS.md,
+                          overflow: "hidden",
+                          backgroundColor: colors.bgSecondary,
+                        }}
+                      >
                         <Image
                           source={{ uri: it.image }}
                           style={{
-                            width: '100%',
+                            width: "100%",
                             aspectRatio: clampAspectRatio(imageAspectRatios[it.image] || 1.2),
                             backgroundColor: colors.bgSecondary,
                           }}
                           resizeMode="cover"
                         />
-                      </View>
+                      </TouchableOpacity>
                     ) : null}
 
                     {/* Receipt Display */}
@@ -1083,11 +1300,7 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
                         <View style={{ flexDirection: "row", alignItems: "center" }}>
                           <View style={{ width: 64, height: 64, backgroundColor: colors.bgSecondary }}>
                             {it.receipt.type === "image" ? (
-                              <Image
-                                source={{ uri: it.receipt.url }}
-                                style={{ width: "100%", height: "100%" }}
-                                resizeMode="cover"
-                              />
+                              <ReceiptThumbnail url={it.receipt.url} size={64} />
                             ) : (
                               <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
                                 <Ionicons name="document-text-outline" size={24} color={colors.textMuted} />
@@ -1162,6 +1375,7 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
                         </Text>
                       </TouchableOpacity>
                     </View>
+                  </View>
                   </View>
                 );
               })}
@@ -1402,6 +1616,12 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
         />
       )}
 
+      <ImageZoomLightbox
+        visible={!!memoryZoomUri}
+        uri={memoryZoomUri}
+        onClose={() => setMemoryZoomUri(null)}
+      />
+
       <Modal visible={editMemoryOpen} transparent animationType="fade">
         <View style={{
           flex: 1,
@@ -1497,6 +1717,32 @@ export default function HomeScreen({ showAddModal = false, onAddModalChange }: H
                 style={{ flex: 1 }}
               />
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Processing Overlay */}
+      <Modal visible={isProcessingMedia || isSavingMemory} transparent animationType="fade">
+        <View style={{
+          flex: 1,
+          backgroundColor: "rgba(0, 0, 0, 0.7)",
+          justifyContent: "center",
+          alignItems: "center",
+        }}>
+          <View style={{
+            backgroundColor: colors.card,
+            borderRadius: RADIUS.xl,
+            padding: SPACING.xl,
+            alignItems: "center",
+            ...SHADOWS.lg,
+          }}>
+            <ActivityIndicator size="large" color={colors.accent} />
+            <Text style={{ ...TYPOGRAPHY.base, color: colors.text, marginTop: SPACING.md, fontWeight: "600" }}>
+              {isProcessingMedia ? "Processing photo..." : "Saving memory..."}
+            </Text>
+            <Text style={{ ...TYPOGRAPHY.sm, color: colors.textMuted, marginTop: SPACING.xs }}>
+              Please wait
+            </Text>
           </View>
         </View>
       </Modal>

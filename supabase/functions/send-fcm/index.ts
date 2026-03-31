@@ -2,9 +2,10 @@
 import { SignJWT, importPKCS8 } from "https://deno.land/x/jose@v4.14.4/index.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 
-const corsHeaders = {
+const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
 async function getAccessToken(serviceAccountJson: string): Promise<{ token: string; projectId: string }> {
@@ -61,7 +62,7 @@ async function sendToToken(accessToken: string, projectId: string, payload: any)
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
+    return new Response("ok", { status: 200, headers: { ...corsHeaders, "Access-Control-Max-Age": "86400" } });
   }
 
   try {
@@ -129,13 +130,32 @@ Deno.serve(async (req) => {
     });
 
     const { token: accessToken, projectId } = await getAccessToken(serviceAccountJson);
+    const notif = notification || {};
+    const title = notif.title || "Meropaw";
+    const bodyText = notif.body || "";
+    const dataPayload = data && typeof data === "object" ? data : {};
+    const dataStrings: Record<string, string> = {};
+    for (const [k, v] of Object.entries(dataPayload)) {
+      dataStrings[k] = typeof v === "string" ? v : JSON.stringify(v);
+    }
+    const basePayload: Record<string, any> = {
+      token: "",
+      notification: { title, body: bodyText },
+      data: dataStrings,
+      apns: {
+        payload: {
+          aps: {
+            alert: { title, body: bodyText },
+            sound: "default",
+          },
+        },
+        headers: { "apns-priority": "10" },
+      },
+    };
     const results = await Promise.all(
       tokens.map(async (token: string) => {
-        const result = await sendToToken(accessToken, projectId, {
-          token,
-          notification,
-          data,
-        });
+        const payload = { ...basePayload, token };
+        const result = await sendToToken(accessToken, projectId, payload);
         if (!result.ok && typeof result.error === "string") {
           const upper = result.error.toUpperCase();
           if (upper.includes("UNREGISTERED")) {
@@ -146,10 +166,16 @@ Deno.serve(async (req) => {
       })
     );
 
-    return new Response(JSON.stringify({ ok: true, results }), {
-      status: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    const anyFailed = results.some((r: any) => !r.ok);
+    const failedErrors = results.filter((r: any) => !r.ok).map((r: any) => r.error);
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        results,
+        ...(anyFailed && { _warnings: failedErrors }),
+      }),
+      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   } catch (error) {
     return new Response(JSON.stringify({ error: error?.message || "Unknown error" }), {
       status: 500,
